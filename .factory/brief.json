@@ -1,0 +1,16 @@
+{
+  "slug": "couch-play-preflight",
+  "title": "Room Ready",
+  "territory": "games-creative",
+  "user": "Hosts of family, classroom, and team party games who need every phone/controller/display on the same local session before guests are waiting.",
+  "smallest_useful_product": "Local-first web host plus phone join page that runs a capability check, reports mixed-controller compatibility, supports a no-install practice screen, and creates a printable/TV join card.",
+  "success_measure": "In observed groups of four to eight, 80% reach a ready state in under five minutes with no host troubleshooting after the first QR scan.",
+  "artifact_class": "web-with-backend",
+  "monetization": "free",
+  "constraints": [
+    "LAN discovery must have a manual code fallback",
+    "Collect no contact data",
+    "Provide accessible large-text and reduced-motion test screens",
+    "Do not claim compatibility for untested games"
+  ]
+}

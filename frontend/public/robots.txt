@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://couch-play-preflight.sociobot.in/sitemap.xml

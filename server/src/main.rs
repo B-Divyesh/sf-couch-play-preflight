@@ -136,11 +136,17 @@ async fn main() {
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = tokio::net::TcpListener::bind(addr).await.expect("bind port");
     info!(%addr, "Room Ready listening");
-    axum::serve(listener, app).with_graceful_shutdown(shutdown()).await.expect("serve");
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
+        .with_graceful_shutdown(shutdown())
+        .await
+        .expect("serve");
 }
 
 fn app(state: AppState, dist: PathBuf) -> Router {
     let index = ServeFile::new(dist.join("index.html"));
+    let service_worker = ServeFile::new(dist.join("sw.js"));
+    let robots = ServeFile::new(dist.join("robots.txt"));
+    let sitemap = ServeFile::new(dist.join("sitemap.xml"));
     let governor = Arc::new(GovernorConfigBuilder::default().per_second(1).burst_size(60).finish().expect("rate limit config"));
     let api = Router::new()
         .route("/rooms", post(create_room))
@@ -151,7 +157,11 @@ fn app(state: AppState, dist: PathBuf) -> Router {
     Router::new()
         .route("/health", get(health))
         .nest("/api", api)
-        .fallback_service(ServeDir::new(dist).not_found_service(index))
+        .route_service("/sw.js", service_worker)
+        .route_service("/robots.txt", robots)
+        .route_service("/sitemap.xml", sitemap)
+        .nest_service("/assets", ServeDir::new(dist.join("assets")))
+        .fallback_service(index)
         .layer(DefaultBodyLimit::max(16 * 1024))
         .layer(SetResponseHeaderLayer::if_not_present(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff")))
         .layer(SetResponseHeaderLayer::if_not_present(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer")))
@@ -164,8 +174,7 @@ fn app(state: AppState, dist: PathBuf) -> Router {
 
 async fn migrate(db: &SqlitePool) -> Result<(), sqlx::Error> {
     sqlx::query("PRAGMA foreign_keys = ON").execute(db).await?;
-    sqlx::query("CREATE TABLE IF NOT EXISTS rooms (code TEXT PRIMARY KEY, host_token TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL, game_label TEXT NOT NULL DEFAULT '', accepted_inputs TEXT NOT NULL DEFAULT 'touch,keyboard,gamepad', display_ready INTEGER NOT NULL DEFAULT 0)").execute(db).await?;
-    sqlx::query("CREATE TABLE IF NOT EXISTS players (id TEXT PRIMARY KEY, room_code TEXT NOT NULL REFERENCES rooms(code) ON DELETE CASCADE, player_token TEXT NOT NULL, name TEXT NOT NULL, input_kind TEXT NOT NULL, browser_ok INTEGER NOT NULL DEFAULT 0, input_ok INTEGER NOT NULL DEFAULT 0, network_ok INTEGER NOT NULL DEFAULT 0, practice_ok INTEGER NOT NULL DEFAULT 0, screen_awake INTEGER NOT NULL DEFAULT 0, note TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL)").execute(db).await?;
+    sqlx::raw_sql(include_str!("../migrations/0001_init.sql")).execute(db).await?;
     Ok(())
 }
 
@@ -293,13 +302,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn schema_and_room_round_trip() {
+    async fn room_lifecycle_round_trip() {
         let db = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
         migrate(&db).await.unwrap();
         let state = AppState { db, build_sha: "test".into() };
         let created = create_room(State(state.clone()), Json(CreateRoom { game_label: Some("Test game".into()) })).await.unwrap().0;
-        let snapshot = get_room(State(state), Path(created.code)).await.unwrap().0;
+        let joined = join_room(State(state.clone()), Path(created.code.clone()), Json(JoinRoom { name: "Sam".into(), input_kind: "touch".into() })).await.unwrap().0;
+        update_player(State(state.clone()), Path((created.code.clone(), joined.player_id)), Json(UpdatePlayer {
+            player_token: joined.player_token,
+            browser_ok: true,
+            input_ok: true,
+            network_ok: true,
+            practice_ok: true,
+            screen_awake: false,
+            note: None,
+        })).await.unwrap();
+        update_room(State(state.clone()), Path(created.code.clone()), Json(UpdateRoom {
+            host_token: created.host_token.clone(),
+            game_label: "Test game".into(),
+            accepted_inputs: vec!["touch".into()],
+            display_ready: true,
+        })).await.unwrap();
+        let snapshot = get_room(State(state.clone()), Path(created.code.clone())).await.unwrap().0;
         assert_eq!(snapshot.room.game_label, "Test game");
-        assert!(snapshot.players.is_empty());
+        assert_eq!(snapshot.players.len(), 1);
+        assert!(snapshot.players[0].practice_ok);
+        delete_room(State(state.clone()), Path(created.code.clone()), Json(HostAuth { host_token: created.host_token })).await.unwrap();
+        assert!(get_room(State(state), Path(created.code)).await.is_err());
     }
 }

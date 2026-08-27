@@ -1,0 +1,305 @@
+use axum::{
+    extract::{DefaultBodyLimit, Path, State},
+    http::{header, HeaderValue, StatusCode},
+    response::{IntoResponse, Response},
+    routing::{get, post, put},
+    Json, Router,
+};
+use chrono::{Duration, Utc};
+use rand::{distributions::Alphanumeric, seq::SliceRandom, Rng};
+use serde::{Deserialize, Serialize};
+use sqlx::{sqlite::SqlitePoolOptions, FromRow, SqlitePool};
+use std::{env, net::SocketAddr, path::PathBuf, sync::Arc};
+use tower_http::{
+    compression::CompressionLayer,
+    services::{ServeDir, ServeFile},
+    set_header::SetResponseHeaderLayer,
+    trace::TraceLayer,
+};
+use tracing::info;
+use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
+use uuid::Uuid;
+
+#[derive(Clone)]
+struct AppState {
+    db: SqlitePool,
+    build_sha: String,
+}
+
+#[derive(Debug, Serialize, FromRow)]
+struct RoomRow {
+    code: String,
+    created_at: String,
+    expires_at: String,
+    game_label: String,
+    accepted_inputs: String,
+    display_ready: bool,
+}
+
+#[derive(Debug, Serialize, FromRow)]
+struct PlayerRow {
+    id: String,
+    name: String,
+    input_kind: String,
+    browser_ok: bool,
+    input_ok: bool,
+    network_ok: bool,
+    practice_ok: bool,
+    screen_awake: bool,
+    note: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+struct RoomSnapshot {
+    room: RoomRow,
+    players: Vec<PlayerRow>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateRoom {
+    game_label: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct CreatedRoom {
+    code: String,
+    host_token: String,
+    expires_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct JoinRoom {
+    name: String,
+    input_kind: String,
+}
+
+#[derive(Debug, Serialize)]
+struct JoinedRoom {
+    player_id: String,
+    player_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdatePlayer {
+    player_token: String,
+    browser_ok: bool,
+    input_ok: bool,
+    network_ok: bool,
+    practice_ok: bool,
+    screen_awake: bool,
+    note: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateRoom {
+    host_token: String,
+    game_label: String,
+    accepted_inputs: Vec<String>,
+    display_ready: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct HostAuth {
+    host_token: String,
+}
+
+#[derive(Debug, Serialize)]
+struct Health {
+    status: &'static str,
+    build_sha: String,
+}
+
+#[derive(Debug)]
+struct ApiError(StatusCode, &'static str);
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        (self.0, Json(serde_json::json!({ "error": self.1 }))).into_response()
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .json()
+        .init();
+
+    let database_url = env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://room-ready.db?mode=rwc".into());
+    let db = SqlitePoolOptions::new().max_connections(8).connect(&database_url).await.expect("connect database");
+    migrate(&db).await.expect("migrate database");
+    let state = AppState { db, build_sha: env::var("BUILD_SHA").unwrap_or_else(|_| "development".into()) };
+    let dist = env::var("DIST_DIR").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("dist"));
+    let app = app(state, dist);
+    let port: u16 = env::var("PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(8080);
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let listener = tokio::net::TcpListener::bind(addr).await.expect("bind port");
+    info!(%addr, "Room Ready listening");
+    axum::serve(listener, app).with_graceful_shutdown(shutdown()).await.expect("serve");
+}
+
+fn app(state: AppState, dist: PathBuf) -> Router {
+    let index = ServeFile::new(dist.join("index.html"));
+    let governor = Arc::new(GovernorConfigBuilder::default().per_second(1).burst_size(60).finish().expect("rate limit config"));
+    let api = Router::new()
+        .route("/rooms", post(create_room))
+        .route("/rooms/:code", get(get_room).put(update_room).delete(delete_room))
+        .route("/rooms/:code/join", post(join_room))
+        .route("/rooms/:code/players/:id", put(update_player))
+        .layer(GovernorLayer { config: governor });
+    Router::new()
+        .route("/health", get(health))
+        .nest("/api", api)
+        .fallback_service(ServeDir::new(dist).not_found_service(index))
+        .layer(DefaultBodyLimit::max(16 * 1024))
+        .layer(SetResponseHeaderLayer::if_not_present(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff")))
+        .layer(SetResponseHeaderLayer::if_not_present(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer")))
+        .layer(SetResponseHeaderLayer::if_not_present(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY")))
+        .layer(SetResponseHeaderLayer::if_not_present(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static("default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")))
+        .layer(CompressionLayer::new())
+        .layer(TraceLayer::new_for_http())
+        .with_state(state)
+}
+
+async fn migrate(db: &SqlitePool) -> Result<(), sqlx::Error> {
+    sqlx::query("PRAGMA foreign_keys = ON").execute(db).await?;
+    sqlx::query("CREATE TABLE IF NOT EXISTS rooms (code TEXT PRIMARY KEY, host_token TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL, game_label TEXT NOT NULL DEFAULT '', accepted_inputs TEXT NOT NULL DEFAULT 'touch,keyboard,gamepad', display_ready INTEGER NOT NULL DEFAULT 0)").execute(db).await?;
+    sqlx::query("CREATE TABLE IF NOT EXISTS players (id TEXT PRIMARY KEY, room_code TEXT NOT NULL REFERENCES rooms(code) ON DELETE CASCADE, player_token TEXT NOT NULL, name TEXT NOT NULL, input_kind TEXT NOT NULL, browser_ok INTEGER NOT NULL DEFAULT 0, input_ok INTEGER NOT NULL DEFAULT 0, network_ok INTEGER NOT NULL DEFAULT 0, practice_ok INTEGER NOT NULL DEFAULT 0, screen_awake INTEGER NOT NULL DEFAULT 0, note TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL)").execute(db).await?;
+    Ok(())
+}
+
+async fn health(State(state): State<AppState>) -> Json<Health> {
+    Json(Health { status: "ok", build_sha: state.build_sha })
+}
+
+async fn create_room(State(state): State<AppState>, Json(input): Json<CreateRoom>) -> Result<Json<CreatedRoom>, ApiError> {
+    cleanup(&state.db).await;
+    let mut code = String::new();
+    let alphabet: Vec<char> = "ABCDEFGHJKLMNPQRSTUVWXYZ".chars().collect();
+    for _ in 0..8 {
+        code = (0..4).map(|_| *alphabet.choose(&mut rand::thread_rng()).unwrap()).collect();
+        let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM rooms WHERE code = ?").bind(&code).fetch_one(&state.db).await.map_err(db_error)?;
+        if exists == 0 { break; }
+    }
+    let host_token: String = rand::thread_rng().sample_iter(&Alphanumeric).take(40).map(char::from).collect();
+    let now = Utc::now();
+    let expires = now + Duration::hours(6);
+    let game = clean_text(input.game_label.unwrap_or_default(), 60)?;
+    sqlx::query("INSERT INTO rooms (code, host_token, created_at, expires_at, game_label) VALUES (?, ?, ?, ?, ?)")
+        .bind(&code).bind(&host_token).bind(now.to_rfc3339()).bind(expires.to_rfc3339()).bind(game)
+        .execute(&state.db).await.map_err(db_error)?;
+    Ok(Json(CreatedRoom { code, host_token, expires_at: expires.to_rfc3339() }))
+}
+
+async fn get_room(State(state): State<AppState>, Path(code): Path<String>) -> Result<Json<RoomSnapshot>, ApiError> {
+    let code = valid_code(code)?;
+    let room = sqlx::query_as::<_, RoomRow>("SELECT code, created_at, expires_at, game_label, accepted_inputs, display_ready FROM rooms WHERE code = ? AND expires_at > ?")
+        .bind(&code).bind(Utc::now().to_rfc3339()).fetch_optional(&state.db).await.map_err(db_error)?.ok_or(ApiError(StatusCode::NOT_FOUND, "Room not found or expired"))?;
+    let players = sqlx::query_as::<_, PlayerRow>("SELECT id, name, input_kind, browser_ok, input_ok, network_ok, practice_ok, screen_awake, note, updated_at FROM players WHERE room_code = ? ORDER BY updated_at")
+        .bind(&code).fetch_all(&state.db).await.map_err(db_error)?;
+    Ok(Json(RoomSnapshot { room, players }))
+}
+
+async fn join_room(State(state): State<AppState>, Path(code): Path<String>, Json(input): Json<JoinRoom>) -> Result<Json<JoinedRoom>, ApiError> {
+    let code = valid_code(code)?;
+    let name = clean_text(input.name, 28)?;
+    if name.is_empty() { return Err(ApiError(StatusCode::BAD_REQUEST, "Enter a name")); }
+    if !["touch", "keyboard", "gamepad"].contains(&input.input_kind.as_str()) { return Err(ApiError(StatusCode::BAD_REQUEST, "Choose a supported input type")); }
+    let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM rooms WHERE code = ? AND expires_at > ?").bind(&code).bind(Utc::now().to_rfc3339()).fetch_one(&state.db).await.map_err(db_error)?;
+    if exists == 0 { return Err(ApiError(StatusCode::NOT_FOUND, "Room not found or expired")); }
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM players WHERE room_code = ?").bind(&code).fetch_one(&state.db).await.map_err(db_error)?;
+    if count >= 12 { return Err(ApiError(StatusCode::CONFLICT, "This room already has 12 guests")); }
+    let player_id = Uuid::new_v4().to_string();
+    let player_token: String = rand::thread_rng().sample_iter(&Alphanumeric).take(36).map(char::from).collect();
+    sqlx::query("INSERT INTO players (id, room_code, player_token, name, input_kind, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
+        .bind(&player_id).bind(&code).bind(&player_token).bind(name).bind(input.input_kind).bind(Utc::now().to_rfc3339())
+        .execute(&state.db).await.map_err(db_error)?;
+    Ok(Json(JoinedRoom { player_id, player_token }))
+}
+
+async fn update_player(State(state): State<AppState>, Path((code, id)): Path<(String, String)>, Json(input): Json<UpdatePlayer>) -> Result<StatusCode, ApiError> {
+    let code = valid_code(code)?;
+    let note = clean_text(input.note.unwrap_or_default(), 100)?;
+    let result = sqlx::query("UPDATE players SET browser_ok=?, input_ok=?, network_ok=?, practice_ok=?, screen_awake=?, note=?, updated_at=? WHERE id=? AND room_code=? AND player_token=?")
+        .bind(input.browser_ok).bind(input.input_ok).bind(input.network_ok).bind(input.practice_ok).bind(input.screen_awake).bind(note).bind(Utc::now().to_rfc3339()).bind(id).bind(code).bind(input.player_token)
+        .execute(&state.db).await.map_err(db_error)?;
+    if result.rows_affected() == 0 { return Err(ApiError(StatusCode::FORBIDDEN, "Guest update was not authorized")); }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn update_room(State(state): State<AppState>, Path(code): Path<String>, Json(input): Json<UpdateRoom>) -> Result<StatusCode, ApiError> {
+    let code = valid_code(code)?;
+    let game = clean_text(input.game_label, 60)?;
+    let allowed = ["touch", "keyboard", "gamepad"];
+    if input.accepted_inputs.is_empty() || input.accepted_inputs.iter().any(|i| !allowed.contains(&i.as_str())) { return Err(ApiError(StatusCode::BAD_REQUEST, "Select at least one valid input type")); }
+    let inputs = input.accepted_inputs.join(",");
+    let result = sqlx::query("UPDATE rooms SET game_label=?, accepted_inputs=?, display_ready=? WHERE code=? AND host_token=?")
+        .bind(game).bind(inputs).bind(input.display_ready).bind(code).bind(input.host_token).execute(&state.db).await.map_err(db_error)?;
+    if result.rows_affected() == 0 { return Err(ApiError(StatusCode::FORBIDDEN, "Host update was not authorized")); }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn delete_room(State(state): State<AppState>, Path(code): Path<String>, Json(input): Json<HostAuth>) -> Result<StatusCode, ApiError> {
+    let code = valid_code(code)?;
+    let result = sqlx::query("DELETE FROM rooms WHERE code=? AND host_token=?").bind(code).bind(input.host_token).execute(&state.db).await.map_err(db_error)?;
+    if result.rows_affected() == 0 { return Err(ApiError(StatusCode::FORBIDDEN, "Room close was not authorized")); }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn valid_code(value: String) -> Result<String, ApiError> {
+    let code = value.trim().to_ascii_uppercase();
+    if code.len() == 4 && code.chars().all(|c| c.is_ascii_uppercase()) { Ok(code) } else { Err(ApiError(StatusCode::BAD_REQUEST, "Room codes are four letters")) }
+}
+
+fn clean_text(value: String, max: usize) -> Result<String, ApiError> {
+    let text = value.trim().split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.chars().count() > max || text.chars().any(char::is_control) { Err(ApiError(StatusCode::BAD_REQUEST, "Text is too long or contains unsupported characters")) } else { Ok(text) }
+}
+
+fn db_error(error: sqlx::Error) -> ApiError {
+    tracing::error!(%error, "database request failed");
+    ApiError(StatusCode::INTERNAL_SERVER_ERROR, "The room service had a problem; try again")
+}
+
+async fn cleanup(db: &SqlitePool) {
+    let _ = sqlx::query("DELETE FROM rooms WHERE expires_at <= ?").bind(Utc::now().to_rfc3339()).execute(db).await;
+}
+
+async fn shutdown() {
+    let ctrl_c = async { tokio::signal::ctrl_c().await.expect("ctrl-c handler") };
+    #[cfg(unix)]
+    let terminate = async { tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("signal handler").recv().await; };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! { _ = ctrl_c => {}, _ = terminate => {} }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn room_code_validation_is_strict() {
+        assert_eq!(valid_code(" abcd ".into()).unwrap(), "ABCD");
+        assert!(valid_code("A1CD".into()).is_err());
+        assert!(valid_code("ABC".into()).is_err());
+    }
+
+    #[test]
+    fn text_is_normalized_and_bounded() {
+        assert_eq!(clean_text("  Family   night ".into(), 20).unwrap(), "Family night");
+        assert!(clean_text("way too long".into(), 4).is_err());
+    }
+
+    #[tokio::test]
+    async fn schema_and_room_round_trip() {
+        let db = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+        migrate(&db).await.unwrap();
+        let state = AppState { db, build_sha: "test".into() };
+        let created = create_room(State(state.clone()), Json(CreateRoom { game_label: Some("Test game".into()) })).await.unwrap().0;
+        let snapshot = get_room(State(state), Path(created.code)).await.unwrap().0;
+        assert_eq!(snapshot.room.game_label, "Test game");
+        assert!(snapshot.players.is_empty());
+    }
+}

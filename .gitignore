@@ -1,5 +1,7 @@
 node_modules/
 dist/
+target/
+room-ready.db*
 .env
 *.log
 graphify-out/

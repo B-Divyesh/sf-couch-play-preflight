@@ -2,6 +2,8 @@ use std::{env, fs, path::PathBuf, process::Command};
 
 fn main() {
     println!("cargo:rerun-if-env-changed=BUILD_SHA");
+    println!("cargo:rerun-if-env-changed=GIT_SHA");
+    println!("cargo:rerun-if-env-changed=SOURCE_COMMIT");
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("manifest directory"));
     let git_dir = manifest_dir.join("..").join(".git");
     let head = git_dir.join("HEAD");
@@ -13,7 +15,15 @@ fn main() {
     }
     println!("cargo:rerun-if-changed={}", git_dir.join("packed-refs").display());
 
-    let sha = env::var("BUILD_SHA").ok().filter(|value| !value.trim().is_empty()).or_else(|| {
+    let supplied_sha = ["BUILD_SHA", "GIT_SHA", "SOURCE_COMMIT"]
+        .into_iter()
+        .find_map(|name| {
+            env::var(name).ok().filter(|value| {
+                let value = value.trim();
+                !value.is_empty() && value != "development"
+            })
+        });
+    let sha = supplied_sha.or_else(|| {
         Command::new("git")
             .args(["rev-parse", "HEAD"])
             .current_dir(&manifest_dir)

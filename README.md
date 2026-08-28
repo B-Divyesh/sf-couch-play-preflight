@@ -44,7 +44,7 @@ to port 8080.
 ```sh
 npm test
 npm run build
-npx tsc -p frontend/tsconfig.json
+npm run lint
 ```
 
 `npm test` runs the TypeScript model suite and Rust room-lifecycle suite. The
@@ -57,22 +57,21 @@ Runtime configuration is environment-only:
 | `PORT` | `8080` | HTTP listen port |
 | `DATABASE_URL` | `sqlite://room-ready.db?mode=rwc` | SQLite connection |
 | `DIST_DIR` | `dist` | Built frontend directory |
-| `BUILD_SHA` | `development` | Value returned by `/health` |
 | `RUST_LOG` | library default | Structured log filter |
 
 ## Container deployment
 
 The root `Dockerfile` builds the Vite bundle and release Rust binary in
 separate stages, then runs as an unprivileged Alpine user on port 8080. Its
-release binary embeds the immutable `BUILD_SHA` supplied by the release build,
-so `/health` reports the image's actual source revision without relying on an
-optional runtime variable. Mount a
+release binary embeds the immutable `BUILD_SHA`, `GIT_SHA`, or `SOURCE_COMMIT`
+supplied by the release build, so `/health` reports the image's actual source
+revision and cannot be changed by runtime configuration. Mount a
 writable, persistent volume at `/data`; a production SQLite deployment must
 use that mount and be constrained to one replica. SQLite is intentionally a
 single-writer local-first store, not a cross-replica database.
 
 ```sh
-docker build -t room-ready .
+docker build --build-arg BUILD_SHA="$(git rev-parse HEAD)" -t room-ready .
 docker run --rm -p 8080:8080 -v room-ready-data:/data room-ready
 ```
 

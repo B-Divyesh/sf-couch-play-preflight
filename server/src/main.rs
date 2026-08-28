@@ -123,6 +123,11 @@ impl IntoResponse for ApiError {
 
 #[tokio::main]
 async fn main() {
+    if env::args().nth(1).as_deref() == Some("--version") {
+        println!("{}", build_sha());
+        return;
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .json()
@@ -131,7 +136,7 @@ async fn main() {
     let database_url = env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://room-ready.db?mode=rwc".into());
     let db = SqlitePoolOptions::new().max_connections(8).connect(&database_url).await.expect("connect database");
     migrate(&db).await.expect("migrate database");
-    let state = AppState { db, build_sha: build_sha(env::var("BUILD_SHA").ok()) };
+    let state = AppState { db, build_sha: build_sha().to_owned() };
     let dist = env::var("DIST_DIR").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("dist"));
     let app = app(state, dist);
     let port: u16 = env::var("PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(8080);
@@ -189,8 +194,8 @@ async fn cache_hashed_assets(request: Request<Body>, next: Next) -> Response {
     response
 }
 
-fn build_sha(runtime_value: Option<String>) -> String {
-    runtime_value.unwrap_or_else(|| env!("ROOM_READY_BUILD_SHA").to_owned())
+fn build_sha() -> &'static str {
+    env!("ROOM_READY_BUILD_SHA")
 }
 
 async fn migrate(db: &SqlitePool) -> Result<(), sqlx::Error> {
@@ -283,7 +288,7 @@ fn valid_code(value: String) -> Result<String, ApiError> {
 }
 
 fn clean_text(value: String, max: usize) -> Result<String, ApiError> {
-    let text = value.trim().split_whitespace().collect::<Vec<_>>().join(" ");
+    let text = value.split_whitespace().collect::<Vec<_>>().join(" ");
     if text.chars().count() > max || text.chars().any(char::is_control) { Err(ApiError(StatusCode::BAD_REQUEST, "Text is too long or contains unsupported characters")) } else { Ok(text) }
 }
 
@@ -392,8 +397,8 @@ mod tests {
     }
 
     #[test]
-    fn runtime_build_identity_can_override_the_embedded_revision() {
-        assert_eq!(build_sha(Some("candidate".into())), "candidate");
-        assert!(!build_sha(None).is_empty());
+    fn build_identity_is_embedded_and_not_a_runtime_override() {
+        assert!(!build_sha().is_empty());
+        assert_eq!(build_sha(), env!("ROOM_READY_BUILD_SHA"));
     }
 }

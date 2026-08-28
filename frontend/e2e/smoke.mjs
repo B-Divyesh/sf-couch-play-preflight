@@ -1,14 +1,18 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { chromium } from 'playwright';
 
 const port = 18081;
 const baseUrl = `http://127.0.0.1:${port}`;
 const dataDir = await mkdtemp(join(tmpdir(), 'room-ready-browser-'));
-const server = spawn(resolve('server/target/release/room-ready-server'), [], {
-  env: { ...process.env, PORT: String(port), DATABASE_URL: `sqlite://${join(dataDir, 'room-ready.db')}?mode=rwc`, DIST_DIR: resolve('dist'), BUILD_SHA: 'browser-smoke' },
+const serverPath = resolve('server/target/release/room-ready-server');
+const version = spawnSync(serverPath, ['--version'], { encoding: 'utf8' });
+if (version.status !== 0 || !version.stdout.trim()) throw new Error(`Release binary has no embedded build identity: ${version.stderr}`);
+const embeddedBuildSha = version.stdout.trim();
+const server = spawn(serverPath, [], {
+  env: { ...process.env, PORT: String(port), DATABASE_URL: `sqlite://${join(dataDir, 'room-ready.db')}?mode=rwc`, DIST_DIR: resolve('dist'), BUILD_SHA: 'runtime-must-not-override' },
   stdio: 'pipe',
 });
 
@@ -27,7 +31,7 @@ try {
   await waitForServer();
   const health = await fetch(`${baseUrl}/health`);
   const healthBody = await health.json();
-  if (healthBody.build_sha !== 'browser-smoke') throw new Error('Health endpoint lost its runtime build identity');
+  if (healthBody.build_sha !== embeddedBuildSha) throw new Error(`Health identity ${healthBody.build_sha} does not match the immutable binary ${embeddedBuildSha}`);
   const home = await fetch(baseUrl);
   for (const [header, expected] of Object.entries({
     'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",

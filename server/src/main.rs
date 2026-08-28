@@ -10,8 +10,8 @@ use axum::{
 use chrono::{Duration, Utc};
 use rand::{distributions::Alphanumeric, seq::SliceRandom, Rng};
 use serde::{Deserialize, Serialize};
-use sqlx::{sqlite::SqlitePoolOptions, FromRow, SqlitePool};
-use std::{env, net::SocketAddr, path::PathBuf, sync::Arc};
+use sqlx::{sqlite::{SqliteConnectOptions, SqlitePoolOptions}, FromRow, SqlitePool};
+use std::{env, net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc, time::Duration as StdDuration};
 use tower_http::{
     compression::CompressionLayer,
     services::{ServeDir, ServeFile},
@@ -134,7 +134,14 @@ async fn main() {
         .init();
 
     let database_url = env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://room-ready.db?mode=rwc".into());
-    let db = SqlitePoolOptions::new().max_connections(8).connect(&database_url).await.expect("connect database");
+    // A single process owns the SQLite deployment. One pooled connection and
+    // a busy timeout avoid lock races during Container Apps revision overlap,
+    // including on the durable Azure Files mount.
+    let database_options = SqliteConnectOptions::from_str(&database_url)
+        .expect("valid database URL")
+        .create_if_missing(true)
+        .busy_timeout(StdDuration::from_secs(30));
+    let db = SqlitePoolOptions::new().max_connections(1).connect_with(database_options).await.expect("connect database");
     migrate(&db).await.expect("migrate database");
     let state = AppState { db, build_sha: build_sha().to_owned() };
     let dist = env::var("DIST_DIR").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("dist"));

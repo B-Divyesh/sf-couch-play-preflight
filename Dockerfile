@@ -7,14 +7,13 @@ RUN npm run build
 
 # Rust 1.88 is the minimum toolchain required by the locked ICU/idna graph.
 FROM rust:1.88-alpine AS server
-RUN apk add --no-cache git musl-dev
+RUN apk add --no-cache musl-dev
 WORKDIR /app
-# Keep the source revision in the builder only. build.rs records it in the
-# binary, so /health identifies the image even when the deployer does not pass
-# an environment variable.
-COPY .git .git
+ARG BUILD_SHA=development
 COPY server ./server
-RUN cargo build --locked --manifest-path server/Cargo.toml --release
+# The release workflow supplies the immutable Git revision as this build arg.
+# build.rs compiles it into the binary, keeping runtime configuration optional.
+RUN BUILD_SHA="$BUILD_SHA" cargo build --locked --manifest-path server/Cargo.toml --release
 
 FROM alpine:3.21
 RUN apk add --no-cache ca-certificates && addgroup -S roomready && adduser -S roomready -G roomready

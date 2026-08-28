@@ -64,8 +64,9 @@ Runtime configuration is environment-only:
 
 The root `Dockerfile` builds the Vite bundle and release Rust binary in
 separate stages, then runs as an unprivileged Alpine user on port 8080. Its
-release binary embeds the source revision, so `/health` reports the image's
-actual build SHA without relying on an optional deploy-time variable. Mount a
+release binary embeds the immutable `BUILD_SHA` supplied by the release build,
+so `/health` reports the image's actual source revision without relying on an
+optional runtime variable. Mount a
 writable, persistent volume at `/data`; a production SQLite deployment must
 use that mount and be constrained to one replica. SQLite is intentionally a
 single-writer local-first store, not a cross-replica database.

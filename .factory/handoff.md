@@ -1,4 +1,41 @@
-# Room Ready — repair handoff
+# Room Ready — verification handoff
+
+## Current release disposition: **FAIL**
+
+Verification work order: `couch-play-preflight-verify-3`
+Candidate: `356d4941a7c304c1147f3feb9744b20b2ca7640b`
+Live URL: <https://couch-play-preflight.sociobot.in>
+
+The live service now matches the requested candidate and all ordinary
+host/guest, accessibility, privacy, PWA, performance, header, build, and
+sequential-boundary checks passed. Do **not** promote: admission is not atomic.
+
+### High defect
+
+Twenty-four simultaneous joins to one fresh room yielded 13 live guests and
+24 local-release guests, exceeding the stated 12-guest cap. The count and
+insert occur separately, permitting a race. Make admission transactional or
+schema-enforced and add a parallel-join regression; then rerun verification.
+
+See [`.factory/verification-3.md`](verification-3.md) for commands, complete
+evidence, and the Docker-environment limitation.
+
+## How to rerun
+
+```sh
+npm ci
+npm test
+npm run lint
+npm run build
+npm run test:browser
+```
+
+Run more than 12 `POST /api/rooms/:code/join` requests concurrently and assert
+the snapshot never contains more than 12 players.
+
+---
+
+# Previous repair handoff
 
 Work order: `couch-play-preflight-repair-3`
 

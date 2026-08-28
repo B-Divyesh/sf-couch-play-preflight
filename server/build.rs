@@ -1,13 +1,22 @@
-use std::{env, process::Command};
+use std::{env, fs, path::PathBuf, process::Command};
 
 fn main() {
     println!("cargo:rerun-if-env-changed=BUILD_SHA");
-    println!("cargo:rerun-if-changed=../.git/HEAD");
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("manifest directory"));
+    let git_dir = manifest_dir.join("..").join(".git");
+    let head = git_dir.join("HEAD");
+    println!("cargo:rerun-if-changed={}", head.display());
+    // On a normal branch HEAD only names a ref, so watching HEAD alone leaves
+    // a cached binary reporting the previous commit after `git commit`.
+    if let Some(reference) = fs::read_to_string(&head).ok().and_then(|value| value.strip_prefix("ref: ").map(str::trim).map(str::to_owned)) {
+        println!("cargo:rerun-if-changed={}", git_dir.join(reference).display());
+    }
+    println!("cargo:rerun-if-changed={}", git_dir.join("packed-refs").display());
 
     let sha = env::var("BUILD_SHA").ok().filter(|value| !value.trim().is_empty()).or_else(|| {
         Command::new("git")
             .args(["rev-parse", "HEAD"])
-            .current_dir(env::var("CARGO_MANIFEST_DIR").expect("manifest directory"))
+            .current_dir(&manifest_dir)
             .output()
             .ok()
             .filter(|output| output.status.success())

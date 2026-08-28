@@ -1,8 +1,48 @@
-# Room Ready v1 handoff
+# Room Ready v1 — repair handoff
 
-Work order: `couch-play-preflight-build-1`
+Work order: `couch-play-preflight-repair-1` (repair of candidate `57ee656f0fd9e84816107f33381c5f3e5f7ded64`)
 
-Completed: 2026-08-27
+Completed: 2026-08-28
+
+## Repair outcome
+
+- Recovered the completed Room Ready product without changing its brief,
+  design system, Rust/axum + SQLite artifact class, or user-facing behavior.
+- Updated only the multi-stage container delivery path: the Rust builder is
+  pinned to `rust:1.88-alpine`, the frontend stage uses `npm ci`, and the Rust
+  release stage uses `cargo build --locked`.
+- The runtime image carries the immutable candidate SHA through `BUILD_SHA`;
+  `/health` therefore identifies exactly which recovered candidate is live.
+- No application-source regression was necessary: this was a build-toolchain
+  repair. The focused regression is the successful locked ACR release build
+  against the existing `server/Cargo.lock` (lockfile unchanged).
+
+## Repair QA evidence
+
+Product QA completed on 2026-08-28:
+
+- Clean install: `npm ci` completed with 87 packages audited and zero
+  vulnerabilities.
+- `npm test`: passed — 3 Vitest assertions and 3 Rust tests.
+- `npm run build`: passed — JS 48.47 KB (18.42 KB gzip), CSS 15.64 KB
+  (4.55 KB gzip), within the product performance budgets.
+- `cargo test --locked --manifest-path server/Cargo.toml`: passed — 3 tests.
+- `cargo build --locked --release --manifest-path server/Cargo.toml`: passed;
+  `server/Cargo.lock` was verified unchanged.
+- ACR locked multi-stage release build run `ch7u`: passed. Rust release build
+  completed in 7m19s under `rust:1.88-alpine`; image
+  `sociobotregistry.azurecr.io/sf-couch-play-preflight:ab2ef435b8f8` was
+  published with digest
+  `sha256:20f01ecd22f3a5c39a53ec4a018e89440a98911e60bf9a0440b7d7a164554971`.
+- Factory container deployment completed against that immutable image, with
+  managed TLS bound for `https://couch-play-preflight.sociobot.in`.
+- Public smoke: `GET /` returned HTTP 200. `GET /health` returned HTTP 200 and
+  `{"status":"ok","build_sha":"57ee656f0fd9e84816107f33381c5f3e5f7ded64"}`.
+- Public browser verification: `verify-url.sh` passed in 853 ms with title
+  `Room Ready — party game preflight`, `lang=en`, one `h1`, a `main` landmark,
+  no missing image alt text, no unlabeled buttons, and zero console errors.
+- Accessibility regression: Axe-core 4.13 WCAG A/AA scan in the preinstalled
+  Playwright 1.58.2 browser passed with 0 violations and 23 passing rules.
 
 ## What was built
 
@@ -44,7 +84,9 @@ The exact frontend build command is `npm run build`; it writes
 runs as a non-root user, exposes port 8080, and uses `/data` for SQLite.
 
 Environment variables: `PORT`, `DATABASE_URL`, `DIST_DIR`, `BUILD_SHA`, and
-`RUST_LOG`. No secret is required.
+`RUST_LOG`. No secret is required. The release Dockerfile defaults `BUILD_SHA`
+to the immutable recovered candidate SHA; the factory deployment uses that
+value for `/health`.
 
 ## Verification
 
@@ -71,9 +113,8 @@ Environment variables: `PORT`, `DATABASE_URL`, `DIST_DIR`, `BUILD_SHA`, and
 - Security smoke: CSP, `nosniff`, `DENY` framing, and no-referrer headers were
   observed; service worker, robots, sitemap, assets, and SPA deep links return
   correct content types/statuses.
-- `docker build` could not be executed because the worker image has no Docker
-  CLI/daemon. Both exact Docker build stages were executed independently via
-  `npm run build` and `cargo build --release`.
+- The repair's exact multi-stage Docker build was executed and passed by ACR
+  (run `ch7u`), including the locked Rust 1.88 release stage.
 
 ## Known limits
 

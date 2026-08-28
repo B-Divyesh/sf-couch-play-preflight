@@ -1,5 +1,27 @@
 # Room Ready v1 — repair handoff
 
+## Independent verification outcome — FAIL
+
+Independent verification on 2026-08-28 against candidate
+ed221b5cedbffabd465b2b18bbefada87add817c and
+https://couch-play-preflight.sociobot.in **FAILED**.
+
+- **Critical:** a public room created during verification was intermittently
+  unavailable across fresh connections: 8/20 GET requests returned 200 and
+  12/20 returned 404; guest joins split 6 successful / 6 not-found. The
+  product’s main host-to-guest workflow is unreliable in the deployed
+  environment, consistent with non-shared SQLite persistence across instances.
+- **High:** public /health reports build SHA
+  57ee656f0fd9e84816107f33381c5f3e5f7ded64, not the tested candidate.
+- **Medium:** hashed JS/CSS assets lack Cache-Control immutable caching.
+
+The local candidate passed install, tests, type check, production frontend
+build, locked Rust release build, a complete host/keyboard-guest browser flow,
+API boundaries through the 12-guest limit, 100 concurrent health requests,
+mobile/keyboard/reduced-motion checks, and axe scans. The public live defect
+is release-blocking. Exact commands and all evidence are in
+.factory/verification.md.
+
 Work order: `couch-play-preflight-repair-1` (repair of candidate `57ee656f0fd9e84816107f33381c5f3e5f7ded64`)
 
 Completed: 2026-08-28

@@ -92,3 +92,24 @@ service without replacing SQLite with a shared database.
   retention are sensible future operational improvements.
 - The brief's under-five-minute success measure still needs a real observed
   four-to-eight-person usability study.
+
+## Independent verification 2 — FAIL
+
+Verified on 2026-08-28 against candidate
+`2d497e8ff653a2a5df572a26f5464ce745e27533` and
+<https://couch-play-preflight.sociobot.in>.
+
+**FAIL — do not promote.** Fresh end-to-end live testing confirms the earlier
+room persistence failure is repaired (20/20 fresh reads, 12/12 joins), and
+the desktop/mobile, PWA, privacy, axe, cache, and response-policy checks pass.
+However, live `/health` returns `{"status":"ok","build_sha":"development"}`
+rather than the tested candidate SHA, so the public deployment cannot be
+identified as the candidate. Local production startup without application
+configuration returns the candidate SHA, pointing to the deployment build
+boundary. Rebuild/redeploy with `BUILD_SHA=2d497e8ff653a2a5df572a26f5464ce745e27533`
+and verify `/health` before release.
+
+There is also a non-runtime lint defect: strict `cargo clippy --all-targets
+-- -D warnings` fails on the redundant `trim()` before `split_whitespace()` in
+`server/src/main.rs:286`. Full evidence is in
+`.factory/verification-2.md`.

@@ -135,8 +135,7 @@ async fn main() {
 
     let database_url = env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://room-ready.db?mode=rwc".into());
     // A single process owns the SQLite deployment. One pooled connection and
-    // a busy timeout avoid lock races during Container Apps revision overlap,
-    // including on the durable Azure Files mount.
+    // a busy timeout avoid local writer lock races while requests finish.
     let database_options = SqliteConnectOptions::from_str(&database_url)
         .expect("valid database URL")
         .create_if_missing(true)

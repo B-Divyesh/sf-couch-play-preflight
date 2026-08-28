@@ -65,10 +65,12 @@ The root `Dockerfile` builds the Vite bundle and release Rust binary in
 separate stages, then runs as an unprivileged Alpine user on port 8080. Its
 release binary embeds the immutable `BUILD_SHA`, `GIT_SHA`, or `SOURCE_COMMIT`
 supplied by the release build, so `/health` reports the image's actual source
-revision and cannot be changed by runtime configuration. Mount a
-writable, persistent volume at `/data`; a production SQLite deployment must
-use that mount and be constrained to one replica. SQLite is intentionally a
-single-writer local-first store, not a cross-replica database.
+revision and cannot be changed by runtime configuration. A production SQLite
+deployment must be constrained to one replica. SQLite is intentionally a
+single-writer local-first store, not a cross-replica database. For durability
+across container replacement, use a volume with reliable POSIX file locking;
+do not place SQLite on an SMB/Azure Files mount. Migrate to a shared database
+before scaling horizontally.
 
 ```sh
 docker build --build-arg BUILD_SHA="$(git rev-parse HEAD)" -t room-ready .

@@ -63,8 +63,12 @@ Runtime configuration is environment-only:
 ## Container deployment
 
 The root `Dockerfile` builds the Vite bundle and release Rust binary in
-separate stages, then runs as an unprivileged Alpine user on port 8080. Mount a
-writable volume at `/data` if rooms should survive container restarts.
+separate stages, then runs as an unprivileged Alpine user on port 8080. Its
+release binary embeds the source revision, so `/health` reports the image's
+actual build SHA without relying on an optional deploy-time variable. Mount a
+writable, persistent volume at `/data`; a production SQLite deployment must
+use that mount and be constrained to one replica. SQLite is intentionally a
+single-writer local-first store, not a cross-replica database.
 
 ```sh
 docker build -t room-ready .

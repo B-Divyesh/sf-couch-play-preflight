@@ -1,6 +1,8 @@
 use axum::{
+    body::Body,
     extract::{DefaultBodyLimit, Path, State},
-    http::{header, HeaderValue, StatusCode},
+    http::{header, HeaderValue, Request, StatusCode},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post, put},
     Json, Router,
@@ -129,7 +131,7 @@ async fn main() {
     let database_url = env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://room-ready.db?mode=rwc".into());
     let db = SqlitePoolOptions::new().max_connections(8).connect(&database_url).await.expect("connect database");
     migrate(&db).await.expect("migrate database");
-    let state = AppState { db, build_sha: env::var("BUILD_SHA").unwrap_or_else(|_| "development".into()) };
+    let state = AppState { db, build_sha: build_sha(env::var("BUILD_SHA").ok()) };
     let dist = env::var("DIST_DIR").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("dist"));
     let app = app(state, dist);
     let port: u16 = env::var("PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(8080);
@@ -162,6 +164,7 @@ fn app(state: AppState, dist: PathBuf) -> Router {
         .route_service("/sitemap.xml", sitemap)
         .nest_service("/assets", ServeDir::new(dist.join("assets")))
         .fallback_service(index)
+        .layer(middleware::from_fn(cache_hashed_assets))
         .layer(DefaultBodyLimit::max(16 * 1024))
         .layer(SetResponseHeaderLayer::if_not_present(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff")))
         .layer(SetResponseHeaderLayer::if_not_present(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer")))
@@ -170,6 +173,24 @@ fn app(state: AppState, dist: PathBuf) -> Router {
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+/// Static Vite assets are content-addressed. Cache them for a year without
+/// caching the HTML shell or service worker that points at a newer release.
+async fn cache_hashed_assets(request: Request<Body>, next: Next) -> Response {
+    let is_asset = request.uri().path().starts_with("/assets/");
+    let mut response = next.run(request).await;
+    if is_asset && response.status().is_success() {
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=31536000, immutable"),
+        );
+    }
+    response
+}
+
+fn build_sha(runtime_value: Option<String>) -> String {
+    runtime_value.unwrap_or_else(|| env!("ROOM_READY_BUILD_SHA").to_owned())
 }
 
 async fn migrate(db: &SqlitePool) -> Result<(), sqlx::Error> {
@@ -287,6 +308,8 @@ async fn shutdown() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::to_bytes;
+    use tower::ServiceExt;
 
     #[test]
     fn room_code_validation_is_strict() {
@@ -329,5 +352,48 @@ mod tests {
         assert!(snapshot.players[0].practice_ok);
         delete_room(State(state.clone()), Path(created.code.clone()), Json(HostAuth { host_token: created.host_token })).await.unwrap();
         assert!(get_room(State(state), Path(created.code)).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn separate_connection_pools_share_a_configured_room_database() {
+        let path = std::env::temp_dir().join(format!("room-ready-{}.db", Uuid::new_v4()));
+        let url = format!("sqlite://{}?mode=rwc", path.display());
+        let first = SqlitePoolOptions::new().max_connections(1).connect(&url).await.unwrap();
+        migrate(&first).await.unwrap();
+        let second = SqlitePoolOptions::new().max_connections(1).connect(&url).await.unwrap();
+        let host = AppState { db: first, build_sha: "test".into() };
+        let guest = AppState { db: second, build_sha: "test".into() };
+
+        let created = create_room(State(host.clone()), Json(CreateRoom { game_label: None })).await.unwrap().0;
+        assert_eq!(get_room(State(guest.clone()), Path(created.code.clone())).await.unwrap().0.room.code, created.code);
+        let _ = join_room(State(guest), Path(created.code.clone()), Json(JoinRoom { name: "Sam".into(), input_kind: "touch".into() })).await.unwrap();
+        assert_eq!(get_room(State(host), Path(created.code)).await.unwrap().0.players.len(), 1);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn successful_hashed_assets_are_immutable_but_html_is_not() {
+        let dist = std::env::temp_dir().join(format!("room-ready-dist-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(dist.join("assets")).unwrap();
+        std::fs::write(dist.join("index.html"), "<!doctype html><title>Room Ready</title>").unwrap();
+        std::fs::write(dist.join("assets/index-a1b2c3.js"), "export {};").unwrap();
+        let db = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+        migrate(&db).await.unwrap();
+        let app = app(AppState { db, build_sha: "test".into() }, dist.clone());
+
+        let asset = app.clone().oneshot(Request::builder().uri("/assets/index-a1b2c3.js").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(asset.headers().get(header::CACHE_CONTROL).unwrap(), "public, max-age=31536000, immutable");
+        assert_eq!(to_bytes(asset.into_body(), usize::MAX).await.unwrap(), "export {};");
+        let html = app.oneshot(Request::builder().uri("/").body(Body::empty()).unwrap()).await.unwrap();
+        assert!(html.headers().get(header::CACHE_CONTROL).is_none());
+
+        let _ = std::fs::remove_dir_all(dist);
+    }
+
+    #[test]
+    fn runtime_build_identity_can_override_the_embedded_revision() {
+        assert_eq!(build_sha(Some("candidate".into())), "candidate");
+        assert!(!build_sha(None).is_empty());
     }
 }

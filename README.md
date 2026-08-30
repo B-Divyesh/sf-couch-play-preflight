@@ -60,7 +60,10 @@ npm run test:browser
 `npm test` runs the TypeScript model suite and Rust API suite, including 24
 parallel joins across multiple SQLite connections. `npm run test:browser`
 checks immediate POST-to-host-read persistence across independent HTTP
-connections and a forced transient 404, independently selectable claims,
+connections, then restarts the production server and proves fresh connections
+can still read and join the same room. It also proves that forwarded-IP rate
+limiting returns `429` and `Retry-After` after that restart, alongside a forced
+transient 404, independently selectable claims,
 same-network discovery, the capacity boundary through the release server,
 authentic touch input, host/guest flow, forwarded-IP rate limiting,
 accessibility and route focus, privacy, versioned service-worker update plus
@@ -85,15 +88,15 @@ The root `Dockerfile` builds the Vite bundle and release Rust binary in
 separate stages, then runs as an unprivileged Alpine user on port 8080. Its
 release binary embeds the immutable `BUILD_SHA`, `GIT_SHA`, or `SOURCE_COMMIT`
 supplied by the release build, so `/health` reports the image's actual source
-revision and cannot be changed by runtime configuration. A production SQLite
-deployment must be constrained to exactly one always-on replica
-(`minReplicas=1`, `maxReplicas=1`). SQLite is intentionally a single-writer
-store, not a cross-replica database. This topology makes a committed room
-immediately visible to every subsequent request. Do not scale it horizontally
-or place its database on SMB/Azure Files. Migrate to PostgreSQL before
-requiring replica or replacement durability. The release gate checks this
-setting after every deployment because a platform default of three replicas
-would split room state across private SQLite files.
+revision and cannot be changed by runtime configuration. The factory container
+deployment mounts its durable `deploy.data_dir=/data` share and is constrained
+to exactly one always-on replica (`minReplicas=1`, `maxReplicas=1`). SQLite is
+intentionally a single-writer store, not a cross-replica database. This
+topology makes a committed room immediately visible to every subsequent
+request and keeps it available when the sole replica restarts. Do not scale it
+horizontally; migrate to PostgreSQL before a multi-replica deployment is
+needed. The release gate checks the mounted `/data` volume and scale setting
+after every deployment.
 
 ```sh
 docker build --build-arg BUILD_SHA="$(git rev-parse HEAD)" -t room-ready .

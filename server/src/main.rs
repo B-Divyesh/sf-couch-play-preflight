@@ -307,7 +307,11 @@ fn default_database_url() -> String {
 }
 
 fn durable_database_url() -> String {
-    format!("sqlite:///data/{DURABLE_DATABASE_FILE}?mode=rwc")
+    // Azure Files does not provide SQLite's POSIX byte-range locks. The
+    // deployment enforces a single replica and this process keeps one pool
+    // connection, so sqlite's no-lock VFS is safe here and avoids a permanent
+    // startup lock on the durable mount.
+    format!("sqlite:///data/{DURABLE_DATABASE_FILE}?mode=rwc&vfs=unix-none")
 }
 
 fn sqlite_options(database_url: &str) -> Result<SqliteConnectOptions, sqlx::Error> {
@@ -763,8 +767,9 @@ mod tests {
     fn container_database_path_is_durable_and_separate_from_the_legacy_file() {
         assert_eq!(
             durable_database_url(),
-            "sqlite:///data/room-ready.sqlite3?mode=rwc"
+            "sqlite:///data/room-ready.sqlite3?mode=rwc&vfs=unix-none"
         );
+        assert!(sqlite_options(&durable_database_url()).is_ok());
     }
 
     #[tokio::test]

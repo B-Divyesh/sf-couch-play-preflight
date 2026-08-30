@@ -95,10 +95,12 @@ intentionally a single-writer store, not a cross-replica database. This
 topology makes a committed room immediately visible to every subsequent
 request and keeps it available when the sole replica restarts. The mounted
 database uses SQLite's rollback journal with full synchronisation, avoiding
-WAL's shared-memory sidecar on the network-backed durable volume. Do not scale
-it horizontally; migrate to PostgreSQL before a multi-replica deployment is
-needed. The release gate checks the mounted `/data` volume and scale setting
-after every deployment.
+WAL's shared-memory sidecar on the network-backed durable volume. Its
+single-writer connection uses SQLite's no-lock VFS because Azure Files does
+not implement the byte-range locks SQLite normally needs; this makes the
+one-replica limit non-negotiable. Do not scale it horizontally; migrate to
+PostgreSQL before a multi-replica deployment is needed. The release gate
+checks the mounted `/data` volume and scale setting after every deployment.
 
 ```sh
 docker build --build-arg BUILD_SHA="$(git rev-parse HEAD)" -t room-ready .

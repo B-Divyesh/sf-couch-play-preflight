@@ -1,4 +1,6 @@
-const CACHE = 'room-ready-shell-v1';
+// Replaced after every production build with a digest of the emitted assets.
+// A changed shell therefore installs a new worker and removes stale caches.
+const CACHE = '__ROOM_READY_CACHE__';
 const SHELL = ['/', '/assets/room-ready-hero-960.webp', '/assets/room-ready-hero-1536.webp', '/assets/favicon.svg'];
 
 self.addEventListener('install', (event) => {

@@ -13,6 +13,10 @@ reliably inspect every TV/casting path.
 
 Live product: <https://couch-play-preflight.sociobot.in>
 
+Try the isolated sample room at <https://couch-play-preflight.sociobot.in/demo>.
+It contains four realistic guest checks, never calls the room API, and can be
+reset or discarded from its persistent demo banner.
+
 ## What ships
 
 - Responsive vanilla TypeScript/Vite interface for hosts and 390px phones
@@ -24,6 +28,8 @@ Live product: <https://couch-play-preflight.sociobot.in>
   offline state, large-text control, and reduced-motion treatment
 - Local privacy and terms routes with no accounts, analytics, contact data,
   third-party fonts, or runtime CDNs
+- One-click `/demo` with four sample guests in the `demo:` session-storage
+  namespace; it never reads or writes a real host or guest room
 
 ## Run locally
 
@@ -51,10 +57,13 @@ npm run test:browser
 
 `npm test` runs the TypeScript model suite and Rust API suite, including 24
 parallel joins across multiple SQLite connections. `npm run test:browser`
-checks the same capacity boundary through the release server, then covers the
-host/guest flow, forwarded-IP rate limiting, accessibility, privacy, offline
-reload, and the 390px layout. The production output is exactly `dist/`, with
-`dist/index.html` at its root.
+checks immediate POST-to-host-read persistence across independent HTTP
+connections, demo isolation, the same capacity boundary through the release
+server, host/guest flow, forwarded-IP rate limiting, accessibility, privacy,
+versioned service-worker update plus offline reload, and the 390px layout.
+The production output is exactly `dist/`, with `dist/index.html` at its root.
+Every visitor-facing claim is listed in [`.factory/claims.json`](.factory/claims.json);
+the isolated sample is documented in [`.factory/demo.md`](.factory/demo.md).
 
 Runtime configuration is environment-only:
 
@@ -72,11 +81,12 @@ separate stages, then runs as an unprivileged Alpine user on port 8080. Its
 release binary embeds the immutable `BUILD_SHA`, `GIT_SHA`, or `SOURCE_COMMIT`
 supplied by the release build, so `/health` reports the image's actual source
 revision and cannot be changed by runtime configuration. A production SQLite
-deployment must be constrained to one replica. SQLite is intentionally a
-single-writer local-first store, not a cross-replica database. For durability
-across container replacement, use a volume with reliable POSIX file locking;
-do not place SQLite on an SMB/Azure Files mount. Migrate to a shared database
-before scaling horizontally.
+deployment must be constrained to exactly one always-on replica
+(`minReplicas=1`, `maxReplicas=1`). SQLite is intentionally a single-writer
+store, not a cross-replica database. This topology makes a committed room
+immediately visible to every subsequent request. Do not scale it horizontally
+or place its database on SMB/Azure Files. Migrate to PostgreSQL before
+requiring replica or replacement durability.
 
 ```sh
 docker build --build-arg BUILD_SHA="$(git rev-parse HEAD)" -t room-ready .

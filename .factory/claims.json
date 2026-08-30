@@ -1,0 +1,44 @@
+[
+  {
+    "id": "demo-isolated",
+    "claim": "Demo — sample data, nothing is saved",
+    "where": "Demo banner and landing action",
+    "test": "npm run test:browser -- --grep @claim:demo-isolated",
+    "sandbox": "Fresh browser context opens /demo; assert the banner, demo: session-only key, no real API request, Reset demo, and Start for real cleanup."
+  },
+  {
+    "id": "sample-guests",
+    "claim": "See a ready room with four sample guests",
+    "where": "Landing action helper and /demo",
+    "test": "npm run test:browser -- --grep @claim:sample-guests",
+    "sandbox": "Fresh /demo context asserts the populated sample roster contains exactly four named guests."
+  },
+  {
+    "id": "demo-privacy",
+    "claim": "The demo never contacts the room service or a third party",
+    "where": "Demo banner, demo documentation, README",
+    "test": "npm run test:browser -- --grep @claim:demo-privacy",
+    "sandbox": "Fresh /demo context records every request and asserts every URL is same-origin and none is an /api request."
+  },
+  {
+    "id": "temporary-rooms",
+    "claim": "Rooms expire after six hours",
+    "where": "Landing facts and Privacy page",
+    "test": "npm run test:browser -- --grep @claim:temporary-rooms",
+    "sandbox": "Fresh release server creates a room and asserts its returned expiry is six hours from creation, within a one-minute clock margin."
+  },
+  {
+    "id": "no-account-or-install",
+    "claim": "No account. No install.",
+    "where": "Landing facts",
+    "test": "npm run test:browser -- --grep @claim:no-account-or-install",
+    "sandbox": "Fresh browser runs the host and keyboard-guest flow with no account fields, no manifest, and no installation step."
+  },
+  {
+    "id": "offline-reload",
+    "claim": "Demo works offline after the first visit",
+    "where": "README and demo documentation",
+    "test": "npm run test:browser -- --grep @claim:offline-reload",
+    "sandbox": "Fresh browser context installs the versioned worker, verifies stale-cache removal across an update, goes offline, and reloads the cached shell."
+  }
+]

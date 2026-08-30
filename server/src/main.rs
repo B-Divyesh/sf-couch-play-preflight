@@ -10,7 +10,10 @@ use axum::{
 use chrono::{Duration, Utc};
 use rand::{distributions::Alphanumeric, seq::SliceRandom, Rng};
 use serde::{Deserialize, Serialize};
-use sqlx::{sqlite::{SqliteConnectOptions, SqlitePoolOptions}, FromRow, SqlitePool};
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
+    FromRow, SqlitePool,
+};
 use std::{env, net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc, time::Duration as StdDuration};
 use tower_http::{
     compression::CompressionLayer,
@@ -138,12 +141,18 @@ async fn main() {
         .json()
         .init();
 
-    let database_url = env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://room-ready.db?mode=rwc".into());
-    // A single process owns the SQLite deployment. One pooled connection and
-    // a busy timeout avoid local writer lock races while requests finish.
+    let (database_url, database_config) = match env::var("DATABASE_URL") {
+        Ok(value) => (value, "supplied"),
+        Err(_) => ("sqlite://room-ready.db?mode=rwc".into(), "defaulted"),
+    };
+    // One always-on replica owns this SQLite file. Keeping one pooled
+    // connection makes every request observe the same committed room state;
+    // the deployment is deliberately constrained to one replica as well.
     let database_options = SqliteConnectOptions::from_str(&database_url)
         .expect("valid database URL")
         .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Full)
         .busy_timeout(StdDuration::from_secs(30));
     let db = SqlitePoolOptions::new().max_connections(1).connect_with(database_options).await.expect("connect database");
     migrate(&db).await.expect("migrate database");
@@ -153,7 +162,7 @@ async fn main() {
     let port: u16 = env::var("PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(8080);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = tokio::net::TcpListener::bind(addr).await.expect("bind port");
-    info!(%addr, "Room Ready listening");
+    info!(%addr, database_config, storage_topology = "single-replica-single-writer", "Room Ready listening");
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
         .with_graceful_shutdown(shutdown())
         .await
@@ -406,7 +415,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn separate_connection_pools_share_a_configured_room_database() {
+    async fn room_created_by_one_connection_is_immediately_readable_by_another() {
         let path = std::env::temp_dir().join(format!("room-ready-{}.db", Uuid::new_v4()));
         let url = format!("sqlite://{}?mode=rwc", path.display());
         let first = SqlitePoolOptions::new().max_connections(1).connect(&url).await.unwrap();
@@ -415,6 +424,9 @@ mod tests {
         let host = AppState { db: first, build_sha: "test".into() };
         let guest = AppState { db: second, build_sha: "test".into() };
 
+        // This is the exact release boundary: POST /api/rooms commits on one
+        // request connection and the host's next GET can be served by another.
+        // Both must point at the one configured durable SQLite file.
         let created = create_room(State(host.clone()), Json(CreateRoom { game_label: None })).await.unwrap().0;
         assert_eq!(get_room(State(guest.clone()), Path(created.code.clone())).await.unwrap().0.room.code, created.code);
         let _ = join_room(State(guest), Path(created.code.clone()), Json(JoinRoom { name: "Sam".into(), input_kind: "touch".into() })).await.unwrap();

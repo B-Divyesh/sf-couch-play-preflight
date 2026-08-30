@@ -5,26 +5,47 @@ import { acceptedInputs, inputLabel, normalizeCode, playerReady, readiness, type
 
 const root = document.querySelector<HTMLDivElement>('#app')!;
 let cleanupView = () => {};
+let demoMode = false;
+
+const demoSnapshot: Snapshot = {
+  room: {
+    code: 'DEMO',
+    created_at: '2026-08-30T18:00:00Z',
+    expires_at: '2026-08-31T00:00:00Z',
+    game_label: 'Family picture quiz',
+    accepted_inputs: 'touch,keyboard,gamepad',
+    display_ready: true,
+  },
+  players: [
+    { id: 'demo-mina', name: 'Mina', input_kind: 'touch', browser_ok: true, input_ok: true, network_ok: true, practice_ok: true, screen_awake: true, note: '', updated_at: '2026-08-30T18:04:00Z' },
+    { id: 'demo-tom', name: 'Tom', input_kind: 'keyboard', browser_ok: true, input_ok: true, network_ok: true, practice_ok: true, screen_awake: false, note: '', updated_at: '2026-08-30T18:04:30Z' },
+    { id: 'demo-ari', name: 'Ari', input_kind: 'gamepad', browser_ok: true, input_ok: true, network_ok: true, practice_ok: true, screen_awake: true, note: '', updated_at: '2026-08-30T18:05:00Z' },
+    { id: 'demo-jo', name: 'Jo', input_kind: 'touch', browser_ok: true, input_ok: true, network_ok: true, practice_ok: true, screen_awake: false, note: '', updated_at: '2026-08-30T18:05:20Z' },
+  ],
+};
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char]!);
 }
 
 function shell(content: string): string {
-  return `<div class="offline-ribbon" role="status" aria-live="polite" hidden>You’re offline. Existing results stay visible; updates will retry when you reconnect.</div>
+  const demoBanner = demoMode ? `<aside class="demo-banner" role="status" aria-label="Demo controls"><span><strong>Demo — sample data, nothing is saved</strong><small>Explore a four-guest room without contacting the room service.</small></span><span class="demo-actions"><button id="reset-demo" class="text-button" type="button">Reset demo</button><a class="secondary" href="/" data-link>Start for real</a></span></aside>` : '';
+  return `${demoBanner}<div class="offline-ribbon" role="status" aria-live="polite" hidden>You’re offline. Existing results stay visible; updates will retry when you reconnect.</div>
     <header class="site-header">
       <a class="wordmark" href="/" data-link aria-label="Room Ready home"><span aria-hidden="true">◉</span> Room Ready</a>
-      <nav aria-label="Utility"><button class="text-button" id="text-size" type="button" aria-pressed="false">Large text</button></nav>
+      <nav aria-label="Utility"><a href="/demo" data-link>Demo</a><a href="/privacy" data-link>Privacy</a><button class="text-button" id="text-size" type="button" aria-pressed="false">Large text</button></nav>
     </header>
     <main id="main">${content}</main>
-    <footer><p>Room Ready is free, local-first preflight—not a game compatibility promise.</p><p><a href="/privacy" data-link>Privacy</a> <a href="/terms" data-link>Terms</a> · Original AI-assisted scene, 2026.</p></footer>`;
+    <footer><p>Room Ready helps hosts check a group setup before guests arrive. It does not certify a specific game.</p><p><a href="/privacy" data-link>Privacy</a> <a href="/terms" data-link>Terms</a> · Built by Param Factory · Original AI-assisted scene, 2026.</p></footer>`;
 }
 
 function bindGlobal() {
   document.querySelectorAll<HTMLAnchorElement>('[data-link]').forEach((link) => link.addEventListener('click', (event) => {
     if (event.metaKey || event.ctrlKey || link.target) return;
     event.preventDefault();
-    navigate(new URL(link.href).pathname + new URL(link.href).search);
+    const destination = new URL(link.href);
+    if (demoMode && destination.pathname === '/' && !destination.search) sessionStorage.removeItem('demo:room-ready');
+    navigate(destination.pathname + destination.search);
   }));
   const large = localStorage.getItem('room-ready-large') === 'true';
   document.documentElement.classList.toggle('large-text', large);
@@ -44,13 +65,19 @@ function bindGlobal() {
   update();
   addEventListener('online', update, { signal: viewSignal.signal });
   addEventListener('offline', update, { signal: viewSignal.signal });
+  document.querySelector<HTMLButtonElement>('#reset-demo')?.addEventListener('click', () => {
+    sessionStorage.removeItem('demo:room-ready');
+    demoView();
+  });
 }
 
 let viewSignal = new AbortController();
-function beginView(html: string) {
+function beginView(html: string, isDemo = false) {
   cleanupView();
   viewSignal.abort();
   viewSignal = new AbortController();
+  demoMode = isDemo;
+  document.body.classList.toggle('in-demo', isDemo);
   root.innerHTML = shell(html);
   bindGlobal();
   scrollTo({ top: 0, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
@@ -69,13 +96,15 @@ function notice(message: string, kind: 'error' | 'success' = 'error') {
 function homeView() {
   beginView(`<section class="hero">
     <div class="hero-copy">
-      <p class="eyebrow">Party-game preflight</p>
-      <h1>Everyone ready<br><em>before</em> game time.</h1>
-      <p class="lede">Check phones, controllers, Wi‑Fi and the big screen in one calm rehearsal. No app. No account. No guest left debugging in front of the room.</p>
+      <p class="eyebrow">Game setup check</p>
+      <h1>Preflight every device before your guests arrive.</h1>
+      <p class="lede">For hosts of family, classroom, and team games who need phones, controllers, Wi‑Fi, and the big screen working before guests wait.</p>
+      <div class="hero-actions"><a class="primary button-link" href="/demo" data-link>Try it with sample data <span aria-hidden="true">→</span></a><p>See a ready room with four sample guests.</p></div>
+      <ul class="plain-facts" aria-label="Room Ready facts"><li>No account</li><li>No install</li><li>Rooms expire after six hours</li></ul>
       <form id="open-form" class="open-form">
         <label for="game">What are you playing? <span>Optional</span></label>
         <input id="game" name="game" maxlength="60" autocomplete="off" placeholder="e.g. browser trivia" />
-        <button class="primary" type="submit">Open a test room <span aria-hidden="true">→</span></button>
+        <button class="secondary" type="submit">Open a real room <span aria-hidden="true">→</span></button>
       </form>
       <p id="notice" class="notice" role="alert" tabindex="-1" hidden></p>
     </div>
@@ -94,7 +123,7 @@ function homeView() {
       const created = await api.create((document.querySelector<HTMLInputElement>('#game')!).value);
       sessionStorage.setItem(`host:${created.code}`, created.host_token);
       navigate(`/host?room=${created.code}`);
-    } catch (error) { notice((error as Error).message); button.disabled = false; button.textContent = 'Open a test room →'; }
+    } catch (error) { notice((error as Error).message); button.disabled = false; button.textContent = 'Open a real room →'; }
   });
   const quick = document.querySelector<HTMLInputElement>('#quick-code')!;
   quick.addEventListener('input', () => { quick.value = normalizeCode(quick.value); });
@@ -194,6 +223,20 @@ function updateHostRoster(snapshot: Snapshot) {
   summary.innerHTML = summaryHtml(snapshot);
 }
 
+function demoView() {
+  // Demo state never shares a key with a host or guest room. It is a small,
+  // session-only fixture so a visitor can inspect the product with no API call.
+  sessionStorage.setItem('demo:room-ready', JSON.stringify({ room: demoSnapshot.room.code, started: Date.now() }));
+  beginView(`<section class="host-stage demo-stage">
+    <div class="host-title"><p class="eyebrow">Sample room · four guests</p><h1>See a ready room before you host.</h1><p>This sample shows a family picture quiz with touch, keyboard, and gamepad guests already checked.</p></div>
+    <aside class="join-card" aria-label="Sample room summary"><p>Sample room</p><strong class="room-code">DEMO</strong><p class="join-url">Sample data is read-only. No room link, guest name, or check leaves this browser.</p></aside>
+  </section>
+  <section class="host-grid demo-board">
+    <div><div class="section-heading"><div><p class="eyebrow">Guest bench</p><h2>Phones &amp; controllers</h2></div></div><div id="roster">${rosterHtml(demoSnapshot)}</div></div>
+    <aside><div id="summary" class="summary-panel" aria-live="polite">${summaryHtml(demoSnapshot)}</div><section class="demo-explainer"><h2>What you can do for real</h2><ol><li>Open a room on the host screen.</li><li>Share its QR code or four-letter code.</li><li>See each guest’s measured checks.</li></ol></section></aside>
+  </section>`, true);
+}
+
 function joinView(initialCode: string) {
   const code = normalizeCode(initialCode);
   beginView(`<section class="join-page"><div><p class="eyebrow">Guest preflight</p><h1>Check your seat.</h1><p class="lede">This takes about one minute. We’ll test this browser and your chosen controls—nothing is installed or saved after the room expires.</p></div><form id="join-form" class="join-form"><label for="room-code">Room code</label><input id="room-code" class="code-input" required minlength="4" maxlength="4" value="${escapeHtml(code)}" autocomplete="off"><label for="guest-name">Name shown to the host</label><input id="guest-name" required maxlength="28" autocomplete="nickname" placeholder="e.g. Sam"><fieldset><legend>What will you use to play?</legend><label class="choice"><input type="radio" name="input-kind" value="touch" checked><span><strong>Phone / touch</strong><small>Taps and swipes</small></span></label><label class="choice"><input type="radio" name="input-kind" value="keyboard"><span><strong>Keyboard</strong><small>Keys or laptop controls</small></span></label><label class="choice"><input type="radio" name="input-kind" value="gamepad"><span><strong>Gamepad</strong><small>Connected browser controller</small></span></label></fieldset><button class="primary" type="submit">Join and run checks</button><p id="notice" class="notice" role="alert" tabindex="-1" hidden></p></form></section>`);
@@ -258,11 +301,25 @@ function legalView(kind: 'privacy' | 'terms') {
 
 function render() {
   const params = new URLSearchParams(location.search);
-  if (location.pathname === '/host') hostView(normalizeCode(params.get('room') || ''));
-  else if (location.pathname === '/join') joinView(params.get('room') || '');
-  else if (location.pathname === '/privacy') legalView('privacy');
-  else if (location.pathname === '/terms') legalView('terms');
-  else homeView();
+  if (location.pathname === '/host') {
+    document.title = 'Host room — Room Ready';
+    hostView(normalizeCode(params.get('room') || ''));
+  } else if (location.pathname === '/join') {
+    document.title = 'Join a room — Room Ready';
+    joinView(params.get('room') || '');
+  } else if (location.pathname === '/demo' || params.get('demo') === '1') {
+    document.title = 'Demo — Room Ready';
+    demoView();
+  } else if (location.pathname === '/privacy') {
+    document.title = 'Privacy — Room Ready';
+    legalView('privacy');
+  } else if (location.pathname === '/terms') {
+    document.title = 'Terms — Room Ready';
+    legalView('terms');
+  } else {
+    document.title = 'Room Ready — game device preflight';
+    homeView();
+  }
 }
 
 addEventListener('popstate', render);

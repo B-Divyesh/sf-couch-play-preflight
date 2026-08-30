@@ -20,7 +20,8 @@ use tower_http::{
 };
 use tracing::info;
 use tower_governor::{
-    governor::GovernorConfigBuilder, key_extractor::SmartIpKeyExtractor, GovernorLayer,
+    errors::GovernorError, governor::GovernorConfigBuilder, key_extractor::SmartIpKeyExtractor,
+    GovernorLayer,
 };
 use uuid::Uuid;
 
@@ -169,6 +170,7 @@ fn app(state: AppState, dist: PathBuf) -> Router {
             .per_millisecond(50)
             .burst_size(40)
             .key_extractor(SmartIpKeyExtractor)
+            .error_handler(rate_limit_error)
             .finish()
             .expect("rate limit config"),
     );
@@ -195,6 +197,21 @@ fn app(state: AppState, dist: PathBuf) -> Router {
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+fn rate_limit_error(error: GovernorError) -> Response {
+    match error {
+        GovernorError::TooManyRequests { .. } => {
+            let mut response = (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(serde_json::json!({ "error": "Too many requests; retry in one second" })),
+            )
+                .into_response();
+            response.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+            response
+        }
+        mut other => other.as_response(),
+    }
 }
 
 /// Static Vite assets are content-addressed. Cache them for a year without

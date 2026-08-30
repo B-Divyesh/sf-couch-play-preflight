@@ -39,8 +39,9 @@ Exact regression coverage exists at two boundaries:
   binary and asserts the same 12/12 split and 12-player snapshot.
 
 The response-policy regression now also proves API throttling returns 429 with
-`Retry-After` and keys clients by the first `X-Forwarded-For` address. The
-container build now follows current stable Rust through `rust:1-alpine`.
+a positive `Retry-After` and keys clients by the first `X-Forwarded-For`
+address. The container build now follows current stable Rust through
+`rust:1-alpine`.
 
 ## Local verification evidence
 

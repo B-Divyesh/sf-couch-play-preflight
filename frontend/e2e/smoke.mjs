@@ -72,7 +72,7 @@ try {
     headers: { 'x-forwarded-for': '198.51.100.20' },
   })));
   const limited = limitedResponses.find((response) => response.status === 429);
-  if (!limited || !limited.headers.get('retry-after')) throw new Error('API rate limit did not return 429 with Retry-After');
+  if (!limited || Number(limited.headers.get('retry-after')) < 1) throw new Error('API rate limit did not return 429 with a positive Retry-After');
   const independentClient = await fetch(`${baseUrl}/api/rooms/ZZZZ`, { headers: { 'x-forwarded-for': '198.51.100.21' } });
   if (independentClient.status === 429) throw new Error('API rate limit did not key the first forwarded client IP independently');
 

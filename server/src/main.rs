@@ -408,7 +408,12 @@ mod tests {
 
     #[tokio::test]
     async fn parallel_joins_never_exceed_the_room_guest_limit() {
-        let db = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+        let path = std::env::temp_dir().join(format!("room-ready-capacity-{}.db", Uuid::new_v4()));
+        let database_options = SqliteConnectOptions::from_str(&format!("sqlite://{}?mode=rwc", path.display()))
+            .unwrap()
+            .create_if_missing(true)
+            .busy_timeout(StdDuration::from_secs(5));
+        let db = SqlitePoolOptions::new().max_connections(8).connect_with(database_options).await.unwrap();
         migrate(&db).await.unwrap();
         let state = AppState { db, build_sha: "test".into() };
         let created = create_room(State(state.clone()), Json(CreateRoom { game_label: Some("Parallel join test".into()) })).await.unwrap().0;
@@ -439,10 +444,13 @@ mod tests {
             }
         }
 
-        let snapshot = get_room(State(state), Path(created.code)).await.unwrap().0;
+        let snapshot = get_room(State(state.clone()), Path(created.code)).await.unwrap().0;
         assert_eq!(accepted, MAX_GUESTS);
         assert_eq!(full, 24 - MAX_GUESTS);
         assert_eq!(snapshot.players.len() as i64, MAX_GUESTS);
+
+        state.db.close().await;
+        let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]

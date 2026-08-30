@@ -1,42 +1,43 @@
-# Room Ready — repair 7 handoff
+# Room Ready — independent verification 8 handoff
 
-## Release disposition: PASS
+## Release disposition: **PASS**
 
-Deployed product revision: `7a24d941334df83ee781ff8cd7d830802376eba9`.
-Live `/health` returns this exact build SHA.
+Verified candidate: `d8760670701017691e03c3c7f481be485f8ab540`
+Verified URL: <https://couch-play-preflight.sociobot.in>
 
-## Fixed
+The live `/health` response reports that exact immutable commit and the
+production rebuild with the same `BUILD_SHA` emitted the exact JS asset served
+live: `index-9mmxaT0E.js`.
 
-- Enforced the live `sf-couch-play-preflight` template at one replica
-  (`minReplicas=1`, `maxReplicas=1`) with its durable
-  `sf-couch-play-preflight-data` volume mounted at `/data`.
-- SQLite defaults to `/data/room-ready.sqlite3`, with full-synchronous
-  rollback journaling. Azure Files lacks SQLite byte-range locking, so the
-  strictly single-writer deployment uses SQLite's `unix-none` VFS.
-- Added a production-process regression for fresh create/read, server restart,
-  persisted join, and forwarded-IP `429`/`Retry-After` behavior. Added tests
-  for the durable database URI and journal configuration.
+## What was verified
 
-## Evidence
+- All 17 manifest claim commands were run independently from a clean checkout
+  and passed; the unfiltered `npm run test:browser` also passed.
+- `npm test`, `npm run lint`, and the production build passed. The first-load
+  JS is 20.60 kB gzip; CSS is 5.09 kB gzip.
+- Fresh live host → mobile guest → keyboard practice → host-read flow passed.
+  The invalid-room recovery, 12-guest boundary, rate limit, privacy traffic,
+  service worker/offline regression, keyboard skip link/focus, reduced motion,
+  desktop and 390px layout, headers, caching, and metadata were checked.
+- Live rate limit was observed at a 40-request burst allowance: 55 quick
+  requests returned 41× `200` and 14× `429`, with `Retry-After: 1` on 429.
+- Live axe WCAG 2 A/AA scans found no serious or critical issues.
 
-- Before repair, live `f663d5a…` was still served. The independent verifier's
-  eight-room alternating `404/200` report remains the exact failure record;
-  nine new pre-repair probes here happened to read 200 consistently.
-- `npm ci` passed with 0 vulnerabilities. `npm test` passed (4 Vitest, 10
-  Rust); `npm run lint`, `npm run build`, and `npm run test:browser` all
-  passed. Built JS is 56.51 kB / 20.57 kB gzip; CSS is 18.74 kB / 5.09 kB gzip.
-- Live template inspection confirmed image `7a24d941334d`, one replica, and
-  `/data` mount. Startup logged `database_config=defaulted` and
-  `storage_topology=single-replica-single-writer`.
-- Fresh room `KGUL` read `200,200,200,200,200`. After restarting revision
-  `sf-couch-play-preflight--0000031`, the same five fresh reads were all 200.
-  A 100-request concurrent fresh burst produced 9 HTTP 429s, all with
-  `Retry-After: 1`.
-- Live `verify-url.sh` passed in 710 ms with title/lang/one h1/main/alts and
-  no console errors. CSP, `nosniff`, `no-referrer`, and frame denial headers
-  are present.
+## How to verify
 
-## Known gaps
+```sh
+npm ci
+npm test
+npm run lint
+BUILD_SHA=d8760670701017691e03c3c7f481be485f8ab540 npm run build
+npm run test:browser
+```
 
-Rooms are intentionally six-hour ephemeral. Do not scale this SQLite service
-horizontally; migrate rooms to PostgreSQL before using multiple replicas.
+Then visit `/`, `/demo`, `/privacy`, and `/terms`. Full evidence is in
+`.factory/verification-8.md`.
+
+## Known gap
+
+The verifier container has no `docker` executable, so Docker image construction
+was not run locally. The container's exact source identity was nevertheless
+confirmed through the live backend and production asset hash.

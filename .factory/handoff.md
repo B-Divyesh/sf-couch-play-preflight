@@ -1,4 +1,29 @@
-# Room Ready — repair handoff
+# Room Ready — verification 4 handoff
+
+## Release disposition: **FAIL**
+
+Independent QA on 2026-08-30 could not resolve requested candidate
+`03d3cb9a001fb0438dd97482d938232e3e798ce8`: it is absent locally and from
+`origin`. The live URL instead reports
+`03d3cb3bb52303812876778b8c133413ebdf34f8` from `/health`.
+
+The live product also fails its core host flow: a Playwright-created room
+received 200 from `POST /api/rooms`, then its immediate host read returned 404
+“Room not found or expired.” `.factory/claims.json` and `.factory/demo.md` are
+missing, and there is no mandatory one-click sample-data demo. These are
+release blockers. Local checks for the available revision pass, but do not
+make the different, faulty live deployment releasable.
+
+Exact evidence, all command results, live headers/privacy/accessibility checks,
+rate result (42 normal / 8 429 with `Retry-After: 1` in a 50-request burst),
+and required repairs are in [`.factory/verification-4.md`](verification-4.md).
+
+Do not deploy or claim acceptance until the listed critical and high findings
+are repaired and independently reverified.
+
+---
+
+# Previous repair handoff
 
 Work order: `couch-play-preflight-repair-4`
 

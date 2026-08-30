@@ -6,13 +6,13 @@ Verifier report: commit `b56bc84fa71a7205d044bcef15e6d656cf173d52`
 
 Failed candidate: `356d4941a7c304c1147f3feb9744b20b2ca7640b`
 
-Repair code commits: `0e80d6b`, `3cb6b1b`
+Repair code commits: `0e80d6b`, `3cb6b1b`, `75736c4`
 
 Live URL: <https://couch-play-preflight.sociobot.in>
 
 ## Release disposition
 
-**Repaired and ready for deployment.** The only finding in verification 3,
+**Repaired and deployed.** The only finding in verification 3,
 including its controller-required exact reproduction, is fixed at the SQLite
 admission boundary. Behavior that passed verification 3 remains covered.
 
@@ -79,6 +79,26 @@ vulnerabilities):
 - Lighthouse 13 mobile: Performance 100, Accessibility 100, Best Practices
   100, SEO 100; FCP 1.2 s, LCP 1.2 s, TBT 40 ms, CLS 0.
 - Package/consumer testing is not applicable to this deployed web product.
+
+## Deployment evidence
+
+- Factory ACR build `ch1av` published
+  `sociobotregistry.azurecr.io/sf-couch-play-preflight:75736c4d358b` with
+  digest `sha256:2ae812be278fe4e216a781725db7bfac25b413abf36f1a7b90d1048abcf74e2a`.
+- Azure Container App revision `sf-couch-play-preflight--0000017` became
+  healthy with only `PORT=8080` supplied at runtime. Scaling was explicitly
+  constrained to `minReplicas=1` and `maxReplicas=1` for local SQLite.
+- Live `/health` returned the complete deployed revision
+  `75736c4d358b5be9dd23aefb9b408f488e2bbb8a`.
+- The final live 24-way probe returned 12 HTTP 200 and 12 HTTP 409 responses;
+  the room snapshot contained exactly 12 players. The live rate probe returned
+  HTTP 429 with `Retry-After: 1`, while another forwarded client received the
+  expected room-not-found response rather than sharing the limit.
+- The worker URL verifier returned HTTP 200 in 574 ms with zero browser errors,
+  `lang=en`, one h1, a main landmark, complete image alt text, and labeled
+  buttons. A fresh live desktop host and keyboard guest reached the ready state,
+  then closed the room, with zero axe violations, console errors, or third-party
+  requests.
 
 ## Run and verify
 

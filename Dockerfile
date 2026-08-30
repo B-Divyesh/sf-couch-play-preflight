@@ -3,6 +3,7 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm ci
 COPY frontend ./frontend
+COPY scripts ./scripts
 RUN npm run build
 
 # Track current stable Rust so the locked dependency graph remains buildable.

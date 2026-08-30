@@ -62,6 +62,8 @@ vulnerabilities.
 - Live HTTP/1.1 `Connection: close` probe: one create followed by 20
   independent room reads returned **20 HTTP 200 / 0 non-200**; authorized
   close returned 204.
+- Live 100-request forwarded-client rate probe returned 93 normal 404s and 7
+  HTTP 429s; a captured limited response included `Retry-After: 1`.
 - A fresh live Playwright desktop host created a room, immediately read the
   same code (200), then closed it (204). A 390×844 reduced-motion `/demo`
   visit had a visible first-focus skip link, `scrollWidth = 390`, transition

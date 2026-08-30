@@ -5,8 +5,8 @@ RUN npm ci
 COPY frontend ./frontend
 RUN npm run build
 
-# Rust 1.88 is the minimum toolchain required by the locked ICU/idna graph.
-FROM rust:1.88-alpine AS server
+# Track current stable Rust so the locked dependency graph remains buildable.
+FROM rust:1-alpine AS server
 RUN apk add --no-cache musl-dev
 WORKDIR /app
 ARG BUILD_SHA=development

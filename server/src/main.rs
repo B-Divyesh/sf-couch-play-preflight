@@ -19,8 +19,12 @@ use tower_http::{
     trace::TraceLayer,
 };
 use tracing::info;
-use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
+use tower_governor::{
+    governor::GovernorConfigBuilder, key_extractor::SmartIpKeyExtractor, GovernorLayer,
+};
 use uuid::Uuid;
+
+const MAX_GUESTS: i64 = 12;
 
 #[derive(Clone)]
 struct AppState {
@@ -160,7 +164,14 @@ fn app(state: AppState, dist: PathBuf) -> Router {
     let service_worker = ServeFile::new(dist.join("sw.js"));
     let robots = ServeFile::new(dist.join("robots.txt"));
     let sitemap = ServeFile::new(dist.join("sitemap.xml"));
-    let governor = Arc::new(GovernorConfigBuilder::default().per_second(1).burst_size(60).finish().expect("rate limit config"));
+    let governor = Arc::new(
+        GovernorConfigBuilder::default()
+            .per_millisecond(50)
+            .burst_size(40)
+            .key_extractor(SmartIpKeyExtractor)
+            .finish()
+            .expect("rate limit config"),
+    );
     let api = Router::new()
         .route("/rooms", post(create_room))
         .route("/rooms/:code", get(get_room).put(update_room).delete(delete_room))
@@ -247,15 +258,27 @@ async fn join_room(State(state): State<AppState>, Path(code): Path<String>, Json
     let name = clean_text(input.name, 28)?;
     if name.is_empty() { return Err(ApiError(StatusCode::BAD_REQUEST, "Enter a name")); }
     if !["touch", "keyboard", "gamepad"].contains(&input.input_kind.as_str()) { return Err(ApiError(StatusCode::BAD_REQUEST, "Choose a supported input type")); }
-    let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM rooms WHERE code = ? AND expires_at > ?").bind(&code).bind(Utc::now().to_rfc3339()).fetch_one(&state.db).await.map_err(db_error)?;
-    if exists == 0 { return Err(ApiError(StatusCode::NOT_FOUND, "Room not found or expired")); }
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM players WHERE room_code = ?").bind(&code).fetch_one(&state.db).await.map_err(db_error)?;
-    if count >= 12 { return Err(ApiError(StatusCode::CONFLICT, "This room already has 12 guests")); }
+
+    // Reserve SQLite's write lock before checking occupancy. Without an
+    // immediate transaction, parallel requests can all observe the same count
+    // and then insert after the limit check has already passed.
+    let mut transaction = state.db.begin_with("BEGIN IMMEDIATE").await.map_err(db_error)?;
+    let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM rooms WHERE code = ? AND expires_at > ?").bind(&code).bind(Utc::now().to_rfc3339()).fetch_one(&mut *transaction).await.map_err(db_error)?;
+    if exists == 0 {
+        transaction.rollback().await.map_err(db_error)?;
+        return Err(ApiError(StatusCode::NOT_FOUND, "Room not found or expired"));
+    }
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM players WHERE room_code = ?").bind(&code).fetch_one(&mut *transaction).await.map_err(db_error)?;
+    if count >= MAX_GUESTS {
+        transaction.rollback().await.map_err(db_error)?;
+        return Err(ApiError(StatusCode::CONFLICT, "This room already has 12 guests"));
+    }
     let player_id = Uuid::new_v4().to_string();
     let player_token: String = rand::thread_rng().sample_iter(&Alphanumeric).take(36).map(char::from).collect();
     sqlx::query("INSERT INTO players (id, room_code, player_token, name, input_kind, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
         .bind(&player_id).bind(&code).bind(&player_token).bind(name).bind(input.input_kind).bind(Utc::now().to_rfc3339())
-        .execute(&state.db).await.map_err(db_error)?;
+        .execute(&mut *transaction).await.map_err(db_error)?;
+    transaction.commit().await.map_err(db_error)?;
     Ok(Json(JoinedRoom { player_id, player_token }))
 }
 
@@ -381,6 +404,45 @@ mod tests {
         assert_eq!(get_room(State(host), Path(created.code)).await.unwrap().0.players.len(), 1);
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn parallel_joins_never_exceed_the_room_guest_limit() {
+        let db = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+        migrate(&db).await.unwrap();
+        let state = AppState { db, build_sha: "test".into() };
+        let created = create_room(State(state.clone()), Json(CreateRoom { game_label: Some("Parallel join test".into()) })).await.unwrap().0;
+        let mut joins = tokio::task::JoinSet::new();
+
+        for index in 0..24 {
+            let state = state.clone();
+            let code = created.code.clone();
+            joins.spawn(async move {
+                join_room(
+                    State(state),
+                    Path(code),
+                    Json(JoinRoom { name: format!("Guest {}", index + 1), input_kind: "touch".into() }),
+                )
+                .await
+                .map(|_| StatusCode::OK)
+                .unwrap_or_else(|error| error.0)
+            });
+        }
+
+        let mut accepted = 0;
+        let mut full = 0;
+        while let Some(result) = joins.join_next().await {
+            match result.unwrap() {
+                StatusCode::OK => accepted += 1,
+                StatusCode::CONFLICT => full += 1,
+                status => panic!("parallel join returned unexpected status {status}"),
+            }
+        }
+
+        let snapshot = get_room(State(state), Path(created.code)).await.unwrap().0;
+        assert_eq!(accepted, MAX_GUESTS);
+        assert_eq!(full, 24 - MAX_GUESTS);
+        assert_eq!(snapshot.players.len() as i64, MAX_GUESTS);
     }
 
     #[tokio::test]

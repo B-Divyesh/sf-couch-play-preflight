@@ -43,6 +43,39 @@ try {
   }
   const asset = await fetch(`${baseUrl}/assets/index-6F-2nOcD.js`);
   if (asset.headers.get('cache-control') !== 'public, max-age=31536000, immutable') throw new Error('Hashed assets are not immutable-cacheable');
+
+  // Regression for verification-3: admission must stay capped even when every
+  // guest reaches the count check at the same time.
+  const capacityRoomResponse = await fetch(`${baseUrl}/api/rooms`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ game_label: 'Parallel join regression' }),
+  });
+  const capacityRoom = await capacityRoomResponse.json();
+  const parallelJoins = await Promise.all(Array.from({ length: 24 }, (_, index) => fetch(`${baseUrl}/api/rooms/${capacityRoom.code}/join`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: `Guest ${index + 1}`, input_kind: 'touch' }),
+  })));
+  const acceptedJoins = parallelJoins.filter((response) => response.status === 200).length;
+  const rejectedJoins = parallelJoins.filter((response) => response.status === 409).length;
+  if (acceptedJoins !== 12 || rejectedJoins !== 12) throw new Error(`Parallel admission returned ${acceptedJoins} accepted and ${rejectedJoins} full responses`);
+  const capacitySnapshot = await fetch(`${baseUrl}/api/rooms/${capacityRoom.code}`).then((response) => response.json());
+  if (capacitySnapshot.players.length !== 12) throw new Error(`Parallel admission persisted ${capacitySnapshot.players.length} guests`);
+  await fetch(`${baseUrl}/api/rooms/${capacityRoom.code}`, {
+    method: 'DELETE',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ host_token: capacityRoom.host_token }),
+  });
+
+  const limitedResponses = await Promise.all(Array.from({ length: 50 }, () => fetch(`${baseUrl}/api/rooms/ZZZZ`, {
+    headers: { 'x-forwarded-for': '198.51.100.20' },
+  })));
+  const limited = limitedResponses.find((response) => response.status === 429);
+  if (!limited || !limited.headers.get('retry-after')) throw new Error('API rate limit did not return 429 with Retry-After');
+  const independentClient = await fetch(`${baseUrl}/api/rooms/ZZZZ`, { headers: { 'x-forwarded-for': '198.51.100.21' } });
+  if (independentClient.status === 429) throw new Error('API rate limit did not key the first forwarded client IP independently');
+
   const browser = await chromium.launch({ headless: true });
   // The production CSP correctly disallows inline scripts. Bypass it only in
   // this test context so axe can be injected without weakening the product.
@@ -101,7 +134,7 @@ try {
   await guestContext.close();
   await hostContext.close();
   await browser.close();
-  console.log('Desktop host/keyboard guest/axe/privacy/offline and 390px mobile smoke passed.');
+  console.log('Parallel admission, forwarded-IP rate policy, desktop host/keyboard guest, axe, privacy, offline, and 390px mobile smoke passed.');
 } finally {
   server.kill('SIGTERM');
   await rm(dataDir, { recursive: true, force: true });

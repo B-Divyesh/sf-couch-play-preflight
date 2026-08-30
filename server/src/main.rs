@@ -175,12 +175,9 @@ async fn main() {
     // file systems. One pooled connection still gives each request one
     // committed, fully-synchronised view of the room database.
     let database_options = sqlite_options(&database_url).expect("valid database URL");
-    let db = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(database_options)
+    let db = open_database_with_retry(database_options)
         .await
-        .expect("connect database");
-    migrate_with_retry(&db).await.expect("migrate database");
+        .expect("connect and migrate database");
     let (network_key, network_key_config) = load_network_key().expect("load network match key");
     let state = AppState {
         db,
@@ -378,14 +375,31 @@ async fn migrate(db: &SqlitePool) -> Result<(), sqlx::Error> {
 }
 
 /// Azure Files can retain SQLite's advisory lock briefly while a replaced
-/// replica exits. Keep the one new replica alive and retry its idempotent
-/// migration instead of crash-looping against that lock.
-async fn migrate_with_retry(db: &SqlitePool) -> Result<(), sqlx::Error> {
+/// replica exits. Drop the failed pool before retrying so a failed DDL attempt
+/// cannot retain its own SQLite lock across retries.
+async fn open_database_with_retry(
+    options: SqliteConnectOptions,
+) -> Result<SqlitePool, sqlx::Error> {
     let mut last_error = None;
     for attempt in 1..=12 {
-        match migrate(db).await {
-            Ok(()) => return Ok(()),
+        let pool = match SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options.clone())
+            .await
+        {
+            Ok(pool) => pool,
             Err(error) if attempt < 12 => {
+                warn!(attempt, %error, "database migration is locked; retrying");
+                last_error = Some(error);
+                tokio::time::sleep(StdDuration::from_secs(5)).await;
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        match migrate(&pool).await {
+            Ok(()) => return Ok(pool),
+            Err(error) if attempt < 12 => {
+                pool.close().await;
                 warn!(attempt, %error, "database migration is locked; retrying");
                 last_error = Some(error);
                 tokio::time::sleep(StdDuration::from_secs(5)).await;

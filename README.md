@@ -93,8 +93,10 @@ deployment mounts its durable `deploy.data_dir=/data` share and is constrained
 to exactly one always-on replica (`minReplicas=1`, `maxReplicas=1`). SQLite is
 intentionally a single-writer store, not a cross-replica database. This
 topology makes a committed room immediately visible to every subsequent
-request and keeps it available when the sole replica restarts. Do not scale it
-horizontally; migrate to PostgreSQL before a multi-replica deployment is
+request and keeps it available when the sole replica restarts. The mounted
+database uses SQLite's rollback journal with full synchronisation, avoiding
+WAL's shared-memory sidecar on the network-backed durable volume. Do not scale
+it horizontally; migrate to PostgreSQL before a multi-replica deployment is
 needed. The release gate checks the mounted `/data` volume and scale setting
 after every deployment.
 

@@ -168,15 +168,12 @@ async fn main() {
         Ok(value) => (value, "supplied"),
         Err(_) => (default_database_url(), "defaulted"),
     };
-    // One always-on replica owns this SQLite file. Keeping one pooled
-    // connection makes every request observe the same committed room state;
-    // the deployment is deliberately constrained to one replica as well.
-    let database_options = SqliteConnectOptions::from_str(&database_url)
-        .expect("valid database URL")
-        .create_if_missing(true)
-        .journal_mode(SqliteJournalMode::Wal)
-        .synchronous(SqliteSynchronous::Full)
-        .busy_timeout(StdDuration::from_secs(30));
+    // One always-on replica owns this SQLite file. The durable /data mount is
+    // an Azure Files share, so use SQLite's rollback journal rather than WAL:
+    // WAL relies on a shared-memory sidecar that is not dependable on network
+    // file systems. One pooled connection still gives each request one
+    // committed, fully-synchronised view of the room database.
+    let database_options = sqlite_options(&database_url).expect("valid database URL");
     let db = SqlitePoolOptions::new()
         .max_connections(1)
         .connect_with(database_options)
@@ -309,6 +306,16 @@ fn default_database_url() -> String {
     } else {
         "sqlite://room-ready.db?mode=rwc".into()
     }
+}
+
+fn sqlite_options(database_url: &str) -> Result<SqliteConnectOptions, sqlx::Error> {
+    SqliteConnectOptions::from_str(database_url).map(|options| {
+        options
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Delete)
+            .synchronous(SqliteSynchronous::Full)
+            .busy_timeout(StdDuration::from_secs(30))
+    })
 }
 
 fn default_network_key_path() -> PathBuf {
@@ -852,6 +859,26 @@ mod tests {
             1
         );
 
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn durable_sqlite_uses_a_rollback_journal() {
+        let path = std::env::temp_dir().join(format!("room-ready-journal-{}.db", Uuid::new_v4()));
+        let url = format!("sqlite://{}?mode=rwc", path.display());
+        let db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(sqlite_options(&url).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("PRAGMA journal_mode")
+                .fetch_one(&db)
+                .await
+                .unwrap(),
+            "delete"
+        );
+        db.close().await;
         let _ = std::fs::remove_file(path);
     }
 

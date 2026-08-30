@@ -5,7 +5,9 @@ CREATE TABLE IF NOT EXISTS rooms (
     expires_at TEXT NOT NULL,
     game_label TEXT NOT NULL DEFAULT '',
     accepted_inputs TEXT NOT NULL DEFAULT 'touch,keyboard,gamepad',
-    display_ready INTEGER NOT NULL DEFAULT 0
+    display_ready INTEGER NOT NULL DEFAULT 0,
+    network_id TEXT NOT NULL DEFAULT '',
+    discoverable INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS players (

@@ -1,11 +1,15 @@
 import QRCode from 'qrcode';
 import './style.css';
-import { api } from './api';
-import { acceptedInputs, inputLabel, normalizeCode, playerReady, readiness, type InputKind, type Player, type Snapshot } from './model';
+import { api, ApiRequestError } from './api';
+import { acceptedInputs, authenticPracticeInput, inputLabel, normalizeCode, playerReady, readiness, type InputKind, type Player, type Snapshot } from './model';
+
+declare const __BUILD_SHA__: string;
 
 const root = document.querySelector<HTMLDivElement>('#app')!;
 let cleanupView = () => {};
 let demoMode = false;
+let routeFocusPending = false;
+const buildLabel = __BUILD_SHA__.slice(0, 12);
 
 const demoSnapshot: Snapshot = {
   room: {
@@ -35,8 +39,9 @@ function shell(content: string): string {
       <a class="wordmark" href="/" data-link aria-label="Room Ready home"><span aria-hidden="true">◉</span> Room Ready</a>
       <nav aria-label="Utility"><a href="/demo" data-link>Demo</a><a href="/privacy" data-link>Privacy</a><button class="text-button" id="text-size" type="button" aria-pressed="false">Large text</button></nav>
     </header>
-    <main id="main">${content}</main>
-    <footer><p>Room Ready helps hosts check a group setup before guests arrive. It does not certify a specific game.</p><p><a href="/privacy" data-link>Privacy</a> <a href="/terms" data-link>Terms</a> · Built by Param Factory · Original AI-assisted scene, 2026.</p></footer>`;
+    <div id="route-status" class="sr-only" aria-live="polite"></div>
+    <main id="main" tabindex="-1">${content}</main>
+    <footer><p>Room Ready helps hosts check a group setup before guests arrive. It does not certify a specific game.</p><p class="footer-links"><a href="/privacy" data-link>Privacy</a><a href="/terms" data-link>Terms</a><span>Built by Param Factory</span><span>Build ${escapeHtml(buildLabel)}</span><span>Original AI-assisted scene, 2026</span></p></footer>`;
 }
 
 function bindGlobal() {
@@ -52,6 +57,7 @@ function bindGlobal() {
   const sizeButton = document.querySelector<HTMLButtonElement>('#text-size');
   if (sizeButton) {
     sizeButton.setAttribute('aria-pressed', String(large));
+    sizeButton.textContent = large ? 'Standard text' : 'Large text';
     sizeButton.addEventListener('click', () => {
       const active = !document.documentElement.classList.contains('large-text');
       document.documentElement.classList.toggle('large-text', active);
@@ -72,7 +78,7 @@ function bindGlobal() {
 }
 
 let viewSignal = new AbortController();
-function beginView(html: string, isDemo = false) {
+function beginView(html: string, isDemo = false, focusReady = true) {
   cleanupView();
   viewSignal.abort();
   viewSignal = new AbortController();
@@ -81,11 +87,36 @@ function beginView(html: string, isDemo = false) {
   root.innerHTML = shell(html);
   bindGlobal();
   scrollTo({ top: 0, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+  if (routeFocusPending && focusReady) {
+    routeFocusPending = false;
+    requestAnimationFrame(() => {
+      const heading = document.querySelector<HTMLHeadingElement>('main h1');
+      const status = document.querySelector<HTMLElement>('#route-status');
+      if (heading) {
+        heading.tabIndex = -1;
+        heading.focus({ preventScroll: true });
+        if (status) status.textContent = heading.textContent || document.title;
+      }
+    });
+  }
 }
 
 function navigate(path: string) {
   history.pushState({}, '', path);
+  routeFocusPending = true;
   render();
+}
+
+function updateMetadata(title: string, description: string) {
+  document.title = title;
+  const canonical = document.querySelector<HTMLLinkElement>('link[rel="canonical"]');
+  if (canonical) canonical.href = `${location.origin}${location.pathname}`;
+  document.querySelector<HTMLMetaElement>('meta[name="description"]')?.setAttribute('content', description);
+  document.querySelector<HTMLMetaElement>('meta[property="og:title"]')?.setAttribute('content', title);
+  document.querySelector<HTMLMetaElement>('meta[property="og:description"]')?.setAttribute('content', description);
+  document.querySelector<HTMLMetaElement>('meta[property="og:url"]')?.setAttribute('content', `${location.origin}${location.pathname}`);
+  document.querySelector<HTMLMetaElement>('meta[name="twitter:title"]')?.setAttribute('content', title);
+  document.querySelector<HTMLMetaElement>('meta[name="twitter:description"]')?.setAttribute('content', description);
 }
 
 function notice(message: string, kind: 'error' | 'success' = 'error') {
@@ -104,6 +135,7 @@ function homeView() {
       <form id="open-form" class="open-form">
         <label for="game">What are you playing? <span>Optional</span></label>
         <input id="game" name="game" maxlength="60" autocomplete="off" placeholder="e.g. browser trivia" />
+        <label class="discovery-choice"><input id="discoverable" type="checkbox" checked><span><strong>Let guests find this room on the same network</strong><small>They can always use the QR or four-letter code instead.</small></span></label>
         <button class="secondary" type="submit">Open a real room <span aria-hidden="true">→</span></button>
       </form>
       <p id="notice" class="notice" role="alert" tabindex="-1" hidden></p>
@@ -120,7 +152,7 @@ function homeView() {
     const button = document.querySelector<HTMLButtonElement>('#open-form button')!;
     button.disabled = true; button.textContent = 'Opening the room…';
     try {
-      const created = await api.create((document.querySelector<HTMLInputElement>('#game')!).value);
+      const created = await api.create((document.querySelector<HTMLInputElement>('#game')!).value, document.querySelector<HTMLInputElement>('#discoverable')!.checked);
       sessionStorage.setItem(`host:${created.code}`, created.host_token);
       navigate(`/host?room=${created.code}`);
     } catch (error) { notice((error as Error).message); button.disabled = false; button.textContent = 'Open a real room →'; }
@@ -136,7 +168,7 @@ function homeView() {
 
 async function hostView(code: string) {
   const token = sessionStorage.getItem(`host:${code}`);
-  beginView(`<section class="loading-state"><p class="eyebrow">Room ${escapeHtml(code)}</p><h1>Bringing up the room lights…</h1><p>Loading the latest guest checks.</p></section>`);
+  beginView(`<section class="loading-state"><p class="eyebrow">Room ${escapeHtml(code)}</p><h1>Bringing up the room lights…</h1><p>Confirming the new room and loading guest checks.</p></section>`, false, false);
   if (!token) {
     beginView(`<section class="center-state"><p class="eyebrow">Host access</p><h1>This host key isn’t on this device.</h1><p>For guest privacy, host keys stay only in the tab that opened the room. Return to that device, or open a new room.</p><a class="primary button-link" href="/" data-link>Open a new room</a></section>`);
     return;
@@ -144,7 +176,20 @@ async function hostView(code: string) {
   let timer = 0;
   const paint = async (first = false) => {
     try {
-      const snapshot = await api.get(code);
+      let snapshot: Snapshot | undefined;
+      let lastError: unknown;
+      const attempts = first ? 5 : 1;
+      for (let attempt = 0; attempt < attempts; attempt += 1) {
+        try {
+          snapshot = await api.get(code);
+          break;
+        } catch (error) {
+          lastError = error;
+          if (!(error instanceof ApiRequestError) || error.status !== 404 || attempt === attempts - 1) throw error;
+          await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+        }
+      }
+      if (!snapshot) throw lastError;
       if (first) renderHost(snapshot, token); else updateHostRoster(snapshot);
     } catch (error) {
       if (first) beginView(`<section class="center-state"><p class="eyebrow">Room ${escapeHtml(code)}</p><h1>We couldn’t find this room.</h1><p>${escapeHtml((error as Error).message)}</p><a class="primary button-link" href="/" data-link>Open another room</a></section>`);
@@ -239,9 +284,23 @@ function demoView() {
 
 function joinView(initialCode: string) {
   const code = normalizeCode(initialCode);
-  beginView(`<section class="join-page"><div><p class="eyebrow">Guest preflight</p><h1>Check your seat.</h1><p class="lede">This takes about one minute. We’ll test this browser and your chosen controls—nothing is installed or saved after the room expires.</p></div><form id="join-form" class="join-form"><label for="room-code">Room code</label><input id="room-code" class="code-input" required minlength="4" maxlength="4" value="${escapeHtml(code)}" autocomplete="off"><label for="guest-name">Name shown to the host</label><input id="guest-name" required maxlength="28" autocomplete="nickname" placeholder="e.g. Sam"><fieldset><legend>What will you use to play?</legend><label class="choice"><input type="radio" name="input-kind" value="touch" checked><span><strong>Phone / touch</strong><small>Taps and swipes</small></span></label><label class="choice"><input type="radio" name="input-kind" value="keyboard"><span><strong>Keyboard</strong><small>Keys or laptop controls</small></span></label><label class="choice"><input type="radio" name="input-kind" value="gamepad"><span><strong>Gamepad</strong><small>Connected browser controller</small></span></label></fieldset><button class="primary" type="submit">Join and run checks</button><p id="notice" class="notice" role="alert" tabindex="-1" hidden></p></form></section>`);
+  beginView(`<section class="join-page"><div><p class="eyebrow">Guest preflight</p><h1>Check your seat.</h1><p class="lede">We’ll test this browser, local network, and chosen controls. Nothing is installed.</p><section id="network-discovery" class="network-discovery" aria-labelledby="discovery-title"><h2 id="discovery-title">Rooms on this network</h2><p id="discovery-status" role="status">Looking for rooms opened on the same network…</p><ul id="discovered-rooms" class="discovered-rooms"></ul><p>You can always enter the four-letter code below.</p></section></div><form id="join-form" class="join-form"><label for="room-code">Room code</label><input id="room-code" class="code-input" required minlength="4" maxlength="4" value="${escapeHtml(code)}" autocomplete="off"><label for="guest-name">Name shown to the host</label><input id="guest-name" required maxlength="28" autocomplete="nickname" placeholder="e.g. Sam"><fieldset><legend>What will you use to play?</legend><label class="choice"><input type="radio" name="input-kind" value="touch" checked><span><strong>Phone / touch</strong><small>Taps and swipes</small></span></label><label class="choice"><input type="radio" name="input-kind" value="keyboard"><span><strong>Keyboard</strong><small>Keys or laptop controls</small></span></label><label class="choice"><input type="radio" name="input-kind" value="gamepad"><span><strong>Gamepad</strong><small>Connected browser controller</small></span></label></fieldset><button class="primary" type="submit">Join and run checks</button><p id="notice" class="notice" role="alert" tabindex="-1" hidden></p></form></section>`);
   const codeInput = document.querySelector<HTMLInputElement>('#room-code')!;
   codeInput.addEventListener('input', () => { codeInput.value = normalizeCode(codeInput.value); });
+  api.discover().then((rooms) => {
+    const status = document.querySelector<HTMLElement>('#discovery-status');
+    const list = document.querySelector<HTMLUListElement>('#discovered-rooms');
+    if (!status || !list) return;
+    status.textContent = rooms.length ? `${rooms.length} ${rooms.length === 1 ? 'room is' : 'rooms are'} available on this network.` : 'No rooms were found on this network.';
+    list.innerHTML = rooms.map((room) => `<li><button type="button" data-room-code="${room.code}"><strong>${room.code}</strong><span>${escapeHtml(room.game_label || 'Unnamed activity')}</span></button></li>`).join('');
+    list.querySelectorAll<HTMLButtonElement>('[data-room-code]').forEach((button) => button.addEventListener('click', () => {
+      codeInput.value = button.dataset.roomCode || '';
+      codeInput.focus();
+    }));
+  }).catch(() => {
+    const status = document.querySelector<HTMLElement>('#discovery-status');
+    if (status) status.textContent = 'Network lookup is unavailable. Ask the host for the four-letter code.';
+  });
   document.querySelector<HTMLFormElement>('#join-form')!.addEventListener('submit', async (event) => {
     event.preventDefault();
     const button = document.querySelector<HTMLButtonElement>('#join-form button')!;
@@ -258,15 +317,16 @@ function joinView(initialCode: string) {
 
 async function runGuestChecks(code: string, playerId: string, token: string, kind: InputKind) {
   let networkOk = false;
-  try { const start = performance.now(); await fetch('/health', { cache: 'no-store' }); networkOk = performance.now() - start < 5000; } catch { networkOk = false; }
+  try { networkOk = (await api.checkNetwork(code)).same_network; } catch { networkOk = false; }
   const browserOk = window.isSecureContext || ['localhost', '127.0.0.1'].includes(location.hostname);
   const inputOk = kind === 'touch' ? ('PointerEvent' in window && (navigator.maxTouchPoints > 0 || matchMedia('(pointer: coarse)').matches)) : kind === 'keyboard' ? true : !!navigator.getGamepads?.().some(Boolean);
   const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const canWake = 'wakeLock' in navigator;
-  const state = { browser_ok: browserOk, input_ok: inputOk, network_ok: networkOk, practice_ok: false, screen_awake: false, note: inputOk ? '' : kind === 'gamepad' ? 'Connect the gamepad and press any button, then retry practice.' : 'This device did not report touch input.' };
+  const inputNote = inputOk ? '' : kind === 'gamepad' ? 'Connect the gamepad and press any button, then retry practice.' : 'This device did not report touch input.';
+  const state = { browser_ok: browserOk, input_ok: inputOk, network_ok: networkOk, practice_ok: false, screen_awake: false, note: !networkOk ? 'Join the host’s Wi-Fi or local network, then retry the checks.' : inputNote };
   const save = () => api.updatePlayer(code, playerId, { player_token: token, ...state }).catch((error) => notice((error as Error).message));
   await save();
-  beginView(`<section class="guest-check"><div class="guest-intro"><p class="eyebrow">Room ${escapeHtml(code)} · ${escapeHtml(inputLabel(kind))}</p><h1>Your seat check.</h1><p>Measured on this device. The host sees the results, not browser details or contact information.</p></div><div class="check-grid"><section><h2>Automatic checks</h2><ul class="check-list"><li class="${browserOk ? 'pass' : 'fail'}"><span aria-hidden="true">${browserOk ? '✓' : '!'}</span><div><strong>Secure browser</strong><p>${browserOk ? 'This page can use modern device features.' : 'Open the HTTPS join link instead of an embedded browser.'}</p></div></li><li class="${networkOk ? 'pass' : 'fail'}"><span aria-hidden="true">${networkOk ? '✓' : '!'}</span><div><strong>Room connection</strong><p>${networkOk ? 'Updates reached the host service.' : 'Reconnect to Wi‑Fi, then retry below.'}</p></div></li><li class="${inputOk ? 'pass' : 'fail'}"><span aria-hidden="true">${inputOk ? '✓' : '!'}</span><div><strong>${escapeHtml(inputLabel(kind))}</strong><p>${inputOk ? 'The browser reports this input.' : 'The browser cannot see this input yet.'}</p></div></li><li class="pass"><span aria-hidden="true">✓</span><div><strong>${reduced ? 'Reduced motion on' : 'Standard motion'}</strong><p>${reduced ? 'Practice uses instant, non-moving feedback.' : 'No continuous animation is used.'}</p></div></li></ul><button id="retry" class="secondary" type="button">Retry automatic checks</button></section><section><h2>Keep the screen present</h2><p>${canWake ? 'Allow screen wake during setup so your seat does not disappear.' : 'This browser cannot request screen wake. You can confirm you’ll keep it awake manually.'}</p><button id="wake" class="secondary" type="button">${canWake ? 'Keep screen awake' : 'I’ll keep it awake'}</button><p id="wake-result" class="inline-result" role="status"></p></section></div><section class="practice"><p class="eyebrow">No-install rehearsal</p><h2>Make three inputs.</h2><p id="practice-help">${kind === 'touch' ? 'Tap or swipe anywhere in the rehearsal floor.' : kind === 'keyboard' ? 'Focus the floor and press any three letter or arrow keys.' : 'Connect a controller and press any three buttons.'}</p><div id="practice-pad" class="practice-pad" tabindex="0" role="application" aria-describedby="practice-help practice-count"><div class="floor-lines" aria-hidden="true"></div><strong id="practice-count" aria-live="polite">0 of 3</strong><span>${kind === 'touch' ? 'Tap / swipe here' : kind === 'keyboard' ? 'Press keys here' : 'Press controller buttons'}</span></div><p id="practice-result" class="notice success" role="status" hidden></p></section><div class="guest-finish"><a class="secondary button-link" href="/" data-link>Done on this device</a><p id="notice" class="notice" role="alert" tabindex="-1" hidden></p></div></section>`);
+  beginView(`<section class="guest-check"><div class="guest-intro"><p class="eyebrow">Room ${escapeHtml(code)} · ${escapeHtml(inputLabel(kind))}</p><h1>Your seat check.</h1><p>Measured on this device. The host sees results, not browser details or contact information.</p></div><div class="check-grid"><section><h2>Automatic checks</h2><ul class="check-list"><li class="${browserOk ? 'pass' : 'fail'}"><span aria-hidden="true">${browserOk ? '✓' : '!'}</span><div><strong>Secure browser</strong><p>${browserOk ? 'This page can use modern device features.' : 'Open the HTTPS join link instead of an embedded browser.'}</p></div></li><li class="${networkOk ? 'pass' : 'fail'}"><span aria-hidden="true">${networkOk ? '✓' : '!'}</span><div><strong>Same local network</strong><p>${networkOk ? 'This device uses the same network gateway as the host.' : 'Join the host’s Wi-Fi or local network, then retry.'}</p></div></li><li class="${inputOk ? 'pass' : 'fail'}"><span aria-hidden="true">${inputOk ? '✓' : '!'}</span><div><strong>${escapeHtml(inputLabel(kind))}</strong><p>${inputOk ? 'The browser reports this input.' : 'The browser cannot see this input yet.'}</p></div></li><li class="pass"><span aria-hidden="true">✓</span><div><strong>${reduced ? 'Reduced motion on' : 'Standard motion'}</strong><p>${reduced ? 'Practice uses instant, non-moving feedback.' : 'No continuous animation is used.'}</p></div></li></ul><p class="check-caveat">Network matching compares the host and guest gateway. VPNs and some mobile networks can affect the result.</p><button id="retry" class="secondary" type="button">Retry automatic checks</button></section><section><h2>Keep the screen present</h2><p>${canWake ? 'Allow screen wake during setup so your seat does not disappear.' : 'This browser cannot request screen wake. You can confirm you’ll keep it awake manually.'}</p><button id="wake" class="secondary" type="button">${canWake ? 'Keep screen awake' : 'I’ll keep it awake'}</button><p id="wake-result" class="inline-result" role="status"></p></section></div><section class="practice"><p class="eyebrow">No-install rehearsal</p><h2>Make three inputs.</h2><p id="practice-help">${kind === 'touch' ? 'Tap or swipe anywhere in the rehearsal floor.' : kind === 'keyboard' ? 'Focus the floor and press any three letter or arrow keys.' : 'Connect a controller and press any three buttons.'}</p><div id="practice-pad" class="practice-pad" tabindex="0" role="application" aria-describedby="practice-help practice-count"><div class="floor-lines" aria-hidden="true"></div><strong id="practice-count" aria-live="polite">0 of 3</strong><span>${kind === 'touch' ? 'Tap / swipe here' : kind === 'keyboard' ? 'Press keys here' : 'Press controller buttons'}</span></div><p id="practice-result" class="notice success" role="status" hidden></p></section><div class="guest-finish"><a class="secondary button-link" href="/" data-link>Done on this device</a><p id="notice" class="notice" role="alert" tabindex="-1" hidden></p></div></section>`);
   let wakeLock: WakeLockSentinel | undefined;
   document.querySelector('#wake')!.addEventListener('click', async () => {
     try {
@@ -282,19 +342,19 @@ async function runGuestChecks(code: string, playerId: string, token: string, kin
   const advance = async () => {
     if (count >= 3) return;
     count += 1; document.querySelector('#practice-count')!.textContent = `${count} of 3`;
-    if (count === 3) { state.practice_ok = true; state.input_ok = true; state.note = ''; await save(); const result = document.querySelector<HTMLElement>('#practice-result')!; result.hidden = false; result.textContent = 'Practice passed. Your seat now shows ready when it fits the host’s setup.'; }
+    if (count === 3) { state.practice_ok = true; if (kind !== 'touch' || inputOk) state.input_ok = true; state.note = state.network_ok && state.input_ok ? '' : state.note; await save(); const result = document.querySelector<HTMLElement>('#practice-result')!; result.hidden = false; result.textContent = 'Practice passed. Your seat now shows ready when it fits the host’s setup.'; }
   };
-  if (kind === 'touch') pad.addEventListener('pointerup', advance);
-  if (kind === 'keyboard') pad.addEventListener('keydown', (event) => { if (!event.repeat && (event.key.length === 1 || event.key.startsWith('Arrow'))) advance(); });
+  if (kind === 'touch') pad.addEventListener('pointerup', (event) => { if (authenticPracticeInput(kind, event)) advance(); });
+  if (kind === 'keyboard') pad.addEventListener('keydown', (event) => { if (authenticPracticeInput(kind, event)) advance(); });
   let gamepadFrame = 0;
   if (kind === 'gamepad') {
-    const poll = () => { navigator.getGamepads?.().forEach((gamepad) => gamepad?.buttons.forEach((button, index) => { if (button.pressed && !seenGamepad.has(index)) { seenGamepad.add(index); advance(); } if (!button.pressed) seenGamepad.delete(index); })); gamepadFrame = requestAnimationFrame(poll); }; poll();
+    const poll = () => { navigator.getGamepads?.().forEach((gamepad) => gamepad?.buttons.forEach((button, index) => { if (button.pressed && !seenGamepad.has(index) && authenticPracticeInput(kind, 'gamepad')) { seenGamepad.add(index); advance(); } if (!button.pressed) seenGamepad.delete(index); })); gamepadFrame = requestAnimationFrame(poll); }; poll();
   }
   cleanupView = () => { if (gamepadFrame) cancelAnimationFrame(gamepadFrame); wakeLock?.release().catch(() => {}); };
 }
 
 function legalView(kind: 'privacy' | 'terms') {
-  const privacy = `<p class="eyebrow">Plain-language policy · August 27, 2026</p><h1>Privacy, kept short.</h1><p>Room Ready does not ask for an account, email address, or contact details. It does not use advertising cookies, analytics trackers, or third-party scripts.</p><h2>What a room stores</h2><p>The service temporarily stores the room code, optional game label, guest display names, chosen input type, and pass/fail preflight results. A private host token and guest update tokens authorize changes. Rooms and their guest records expire after six hours.</p><h2>On your device</h2><p>Host and guest tokens live in session storage and disappear when the browser session ends. Your large-text preference uses local storage. Device checks report only a result—not model, IP address, controller identity, or contacts.</p><h2>Operations</h2><p>Standard server logs may temporarily contain request time, path, status and network address for reliability and abuse prevention. We do not sell or profile this information.</p>`;
+  const privacy = `<p class="eyebrow">Plain-language policy · August 30, 2026</p><h1>Privacy, kept short.</h1><p>Room Ready does not ask for an account, email address, or contact details. It does not use advertising cookies, analytics trackers, or third-party scripts.</p><h2>What a room stores</h2><p>The service temporarily stores the room code, optional game label, guest display names, chosen input type, and pass/fail preflight results. A private host token and guest update tokens authorize changes. Rooms and guest records expire after six hours.</p><h2>Local network matching</h2><p>The service converts the host’s network address into a keyed, one-way match value. It uses that value to find rooms and compare a guest’s network. The room record does not store the raw address. VPNs and some mobile networks can affect the result.</p><h2>On your device</h2><p>Host and guest tokens live in session storage and disappear when the browser session ends. Your large-text preference uses local storage. Device checks report results, not browser models, controller identities, or contacts.</p><h2>Operations</h2><p>Standard server logs may temporarily contain request time, path, status and network address for reliability and abuse prevention. We do not sell or profile this information.</p>`;
   const terms = `<p class="eyebrow">Plain-language terms · August 27, 2026</p><h1>Terms of use.</h1><p>Room Ready is a free setup aid for checking browser, network and input readiness before a group activity. Use it lawfully and do not attempt to disrupt the service or other rooms.</p><h2>No compatibility guarantee</h2><p>A passed preflight means the checks shown passed in this browser. It does not certify any specific game, casting system, local network, controller, or venue. The host is responsible for choosing accurate session requirements and testing the actual activity.</p><h2>Availability</h2><p>The service is provided “as is,” without warranties. Rooms are temporary and may be removed for security, maintenance, or misuse. Do not store important information in a room.</p><h2>Content and license</h2><p>You retain responsibility for names and labels you enter. The Room Ready software and original project assets are available under the MIT License in the repository.</p>`;
   beginView(`<article class="legal">${kind === 'privacy' ? privacy : terms}<p><a href="/" data-link>← Back to Room Ready</a></p></article>`);
 }
@@ -302,27 +362,35 @@ function legalView(kind: 'privacy' | 'terms') {
 function render() {
   const params = new URLSearchParams(location.search);
   if (location.pathname === '/host') {
-    document.title = 'Host room — Room Ready';
+    updateMetadata('Host room — Room Ready', 'Watch guest device, network, and input checks from one temporary room.');
     hostView(normalizeCode(params.get('room') || ''));
   } else if (location.pathname === '/join') {
-    document.title = 'Join a room — Room Ready';
+    updateMetadata('Join a room — Room Ready', 'Find a local room or enter its four-letter code, then check this device.');
     joinView(params.get('room') || '');
   } else if (location.pathname === '/demo' || params.get('demo') === '1') {
-    document.title = 'Demo — Room Ready';
+    updateMetadata('Demo — Room Ready', 'Explore a ready room with four sample guests without saving data.');
     demoView();
   } else if (location.pathname === '/privacy') {
-    document.title = 'Privacy — Room Ready';
+    updateMetadata('Privacy — Room Ready', 'Read what temporary room data Room Ready stores and when it expires.');
     legalView('privacy');
   } else if (location.pathname === '/terms') {
-    document.title = 'Terms — Room Ready';
+    updateMetadata('Terms — Room Ready', 'Read the terms for using Room Ready as a free group setup aid.');
     legalView('terms');
-  } else {
-    document.title = 'Room Ready — game device preflight';
+  } else if (location.pathname === '/') {
+    updateMetadata('Room Ready — check game devices before guests arrive', 'Check phones, controllers, local network, and the shared display before a group game starts.');
     homeView();
+  } else {
+    updateMetadata('Page not found — Room Ready', 'This Room Ready page does not exist. Return home to open or join a room.');
+    beginView(`<section class="center-state not-found"><p class="eyebrow">404 · Page not found</p><h1>We couldn’t find this page.</h1><p>The address may be wrong, or the page may have moved.</p><a class="primary button-link" href="/" data-link>Return home</a></section>`);
   }
 }
 
-addEventListener('popstate', render);
+addEventListener('popstate', () => { routeFocusPending = true; render(); });
+document.querySelector<HTMLAnchorElement>('.skip-link')?.addEventListener('click', (event) => {
+  event.preventDefault();
+  history.replaceState(history.state, '', `${location.pathname}${location.search}#main`);
+  document.querySelector<HTMLElement>('#main')?.focus();
+});
 render();
 
 if ('serviceWorker' in navigator && import.meta.env.PROD) {

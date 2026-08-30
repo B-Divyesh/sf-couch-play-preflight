@@ -43,10 +43,10 @@ strong { color: var(--text); }
 .large-text { font-size: 19px; }
 
 .site-header { position: relative; z-index: 5; display: flex; align-items: center; justify-content: space-between; max-width: 1440px; min-height: 72px; margin: auto; padding: 12px max(24px, env(safe-area-inset-left)); }
-.site-header nav { display: flex; align-items: center; gap: 16px; }
-.site-header nav a { color: var(--muted); font-size: .9rem; font-weight: 750; }
+.site-header nav { display: flex; align-items: center; gap: 12px; }
+.site-header nav a { display: inline-flex; min-height: 44px; align-items: center; padding-inline: 4px; color: var(--muted); font-size: .9rem; font-weight: 750; }
 .site-header nav a:hover { color: var(--text); }
-.wordmark { display: inline-flex; gap: 10px; align-items: center; color: var(--text); font-family: var(--serif); font-size: 1.22rem; text-decoration: none; }
+.wordmark { display: inline-flex; min-height: 44px; gap: 10px; align-items: center; color: var(--text); font-family: var(--serif); font-size: 1.22rem; text-decoration: none; }
 .wordmark span { color: var(--accent); font-family: var(--sans); }
 .text-button { min-height: 44px; border: 0; border-bottom: 1px solid #6b7a7b; padding: 8px 2px; background: transparent; color: var(--muted); cursor: pointer; }
 .text-button:hover { color: var(--text); border-color: var(--accent); }
@@ -54,6 +54,8 @@ main { display: block; }
 footer { display: flex; justify-content: space-between; gap: 24px; max-width: 1440px; margin: 80px auto 0; padding: 32px max(24px, env(safe-area-inset-right)) calc(32px + env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left)); border-top: 1px solid #314046; font-size: .875rem; }
 footer p { margin: 0; }
 footer p:last-child { text-align: right; }
+.footer-links { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px 16px; }
+.footer-links a { display: inline-flex; min-width: 44px; min-height: 44px; align-items: center; justify-content: center; }
 .eyebrow { margin-bottom: 12px; color: var(--accent); font-size: .75rem; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; }
 .lede { max-width: 58ch; font-size: 1.2rem; line-height: 1.55; }
 
@@ -77,6 +79,10 @@ input::placeholder { color: #94a19e; }
 input:hover { border-color: #849895; }
 .open-form input { border-radius: 6px 6px 0 0; }
 .open-form button { border-radius: 0 0 6px 6px; }
+.discovery-choice { display: flex; min-height: 64px; gap: 12px; align-items: center; margin: 0; padding: 10px 12px; background: var(--raised); cursor: pointer; }
+.discovery-choice input { width: 22px; min-height: 22px; flex: 0 0 auto; accent-color: var(--accent); }
+.discovery-choice span, .discovery-choice small { display: block; }
+.discovery-choice small { color: var(--muted); font-weight: 400; }
 .primary, .secondary, .danger-button, .button-link { display: inline-flex; min-height: 48px; align-items: center; justify-content: center; gap: 12px; border-radius: 6px; padding: 11px 18px; font-weight: 800; text-decoration: none; cursor: pointer; transition: transform 180ms ease, background 180ms ease, box-shadow 180ms ease; }
 .primary { border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink); }
 .primary:hover { background: #9ef1e0; box-shadow: 0 10px 28px #79e6d024; transform: translateY(-2px); }
@@ -163,6 +169,13 @@ button:disabled { cursor: wait; opacity: .65; transform: none !important; }
 .join-page > div { align-self: center; }
 .join-form { display: grid; align-self: start; padding: 32px; background: var(--surface); }
 .join-form > label:not(:first-child) { margin-top: 18px; }
+.network-discovery { margin-top: 32px; border-left: 3px solid var(--accent); padding: 20px; background: var(--surface); }
+.network-discovery h2 { font-family: var(--sans); font-size: 1.2rem; font-weight: 800; letter-spacing: 0; }
+.network-discovery p { margin-bottom: 12px; font-size: .9rem; }
+.discovered-rooms { display: grid; gap: 8px; margin: 0 0 12px; padding: 0; list-style: none; }
+.discovered-rooms button { display: flex; width: 100%; min-height: 52px; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid #53656a; border-radius: 6px; padding: 8px 12px; background: var(--raised); color: var(--text); cursor: pointer; }
+.discovered-rooms button:hover { border-color: var(--accent); }
+.discovered-rooms span { color: var(--muted); text-align: right; }
 .choice { position: relative; display: block; margin: 0; cursor: pointer; }
 .choice input { position: absolute; width: 1px; height: 1px; opacity: 0; }
 .choice span { display: block; min-height: 64px; border: 1px solid #53656a; padding: 11px 14px; }
@@ -184,6 +197,7 @@ button:disabled { cursor: wait; opacity: .65; transform: none !important; }
 .check-list li.fail > span { color: var(--danger); }
 .check-list p { margin: 2px 0 0; font-size: .86rem; }
 .inline-result { margin-top: 16px; color: var(--success); }
+.check-caveat { font-size: .82rem; }
 .practice { margin-top: 64px; }
 .practice > p:not(.eyebrow) { max-width: 60ch; }
 .practice-pad { position: relative; display: grid; min-height: 280px; place-content: center; overflow: hidden; border: 1px solid #4d6264; background: #101b1f; text-align: center; touch-action: manipulation; cursor: crosshair; user-select: none; }
@@ -216,9 +230,10 @@ body.presenting .join-card img { width: min(36vh, 360px); height: min(36vh, 360p
 
 @media (max-width: 600px) {
   .site-header { min-height: 64px; }
-  .site-header nav { gap: 10px; }
+  .site-header { padding-inline: 16px; }
+  .site-header nav { gap: 4px; }
   .site-header nav a { font-size: .78rem; }
-  .site-header .text-button { min-height: 40px; font-size: .78rem; }
+  .site-header .text-button { min-height: 44px; font-size: .78rem; }
   .hero { min-height: auto; padding-inline: 16px; }
   .hero-art { min-height: 260px; order: 1; margin-inline: -16px; border-radius: 0; }
   .hero-art img { object-position: 62% center; }
@@ -239,6 +254,7 @@ body.presenting .join-card img { width: min(36vh, 360px); height: min(36vh, 360p
   .how li > span { margin-bottom: 16px; }
   footer { flex-direction: column; margin-top: 48px; padding-inline: 16px; }
   footer p:last-child { text-align: left; }
+  .footer-links { justify-content: flex-start; }
   .host-stage, .host-grid, .guest-check, .join-page { padding-inline: 16px; }
   .host-stage { margin-top: 0; }
   .join-card { padding: 18px; box-shadow: 8px 8px 0 var(--surface); }

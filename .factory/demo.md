@@ -15,3 +15,6 @@ never reads or writes them.
 The service worker caches the demo shell after the first visit, so the demo
 also reloads offline. Its cache name is generated from the built assets; an
 updated release installs a new cache and removes the prior one.
+
+The demo does not run same-network discovery. That feature belongs to real,
+temporary rooms and remains isolated from the `demo:` namespace.

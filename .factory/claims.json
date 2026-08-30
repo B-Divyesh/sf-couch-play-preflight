@@ -4,41 +4,118 @@
     "claim": "Demo — sample data, nothing is saved",
     "where": "Demo banner and landing action",
     "test": "npm run test:browser -- --grep @claim:demo-isolated",
-    "sandbox": "Fresh browser context opens /demo; assert the banner, demo: session-only key, no real API request, Reset demo, and Start for real cleanup."
+    "sandbox": "Fresh /demo context asserts the demo-only session key, Reset demo, and Start for real cleanup."
   },
   {
     "id": "sample-guests",
     "claim": "See a ready room with four sample guests",
     "where": "Landing action helper and /demo",
     "test": "npm run test:browser -- --grep @claim:sample-guests",
-    "sandbox": "Fresh /demo context asserts the populated sample roster contains exactly four named guests."
+    "sandbox": "Fresh /demo context asserts exactly four named sample guests."
   },
   {
     "id": "demo-privacy",
-    "claim": "The demo never contacts the room service or a third party",
+    "claim": "The demo never contacts the room API or a third party",
     "where": "Demo banner, demo documentation, README",
     "test": "npm run test:browser -- --grep @claim:demo-privacy",
-    "sandbox": "Fresh /demo context records every request and asserts every URL is same-origin and none is an /api request."
+    "sandbox": "Fresh /demo context records every request and asserts same-origin static requests with no /api request."
   },
   {
     "id": "temporary-rooms",
     "claim": "Rooms expire after six hours",
-    "where": "Landing facts and Privacy page",
+    "where": "Landing facts, host board, Privacy page, README",
     "test": "npm run test:browser -- --grep @claim:temporary-rooms",
-    "sandbox": "Fresh release server creates a room and asserts its returned expiry is six hours from creation, within a one-minute clock margin."
+    "sandbox": "Fresh room response expires six hours after creation within a one-minute clock margin."
   },
   {
     "id": "no-account-or-install",
     "claim": "No account. No install.",
-    "where": "Landing facts",
+    "where": "Landing facts, join flow, README",
     "test": "npm run test:browser -- --grep @claim:no-account-or-install",
-    "sandbox": "Fresh browser runs the host and keyboard-guest flow with no account fields, no manifest, and no installation step."
+    "sandbox": "Fresh context opens a real room without account fields, password fields, or an install manifest."
   },
   {
     "id": "offline-reload",
     "claim": "Demo works offline after the first visit",
     "where": "README and demo documentation",
     "test": "npm run test:browser -- --grep @claim:offline-reload",
-    "sandbox": "Fresh browser context installs the versioned worker, verifies stale-cache removal across an update, goes offline, and reloads the cached shell."
+    "sandbox": "Dedicated fresh context installs the worker, becomes controlled, goes offline, and reloads /demo from the cached shell."
+  },
+  {
+    "id": "local-room-discovery",
+    "claim": "Guests can find an opted-in room on the same network or enter its four-letter code",
+    "where": "Landing setup, join screen, README",
+    "test": "npm run test:browser -- --grep @claim:local-room-discovery",
+    "sandbox": "Fresh host opens a discoverable room; a guest context finds it through network discovery and can still type a manual code."
+  },
+  {
+    "id": "join-card",
+    "claim": "The host gets a QR join card with TV and print views",
+    "where": "Host board and README",
+    "test": "npm run test:browser -- --grep @claim:join-card",
+    "sandbox": "Fresh room asserts a rendered QR, activates TV presentation mode, and observes the print action invoke browser printing."
+  },
+  {
+    "id": "guest-capacity",
+    "claim": "A room supports up to 12 guests",
+    "where": "README and room-full error",
+    "test": "npm run test:browser -- --grep @claim:guest-capacity",
+    "sandbox": "Fresh room receives 24 concurrent joins and asserts exactly 12 persist while every excess join returns 409."
+  },
+  {
+    "id": "capability-checks",
+    "claim": "Each guest checks the secure browser, local network, chosen input, and motion setting",
+    "where": "Guest check and README",
+    "test": "npm run test:browser -- --grep @claim:capability-checks",
+    "sandbox": "Fresh keyboard guest reaches the check screen and observes each named measured result."
+  },
+  {
+    "id": "input-practice",
+    "claim": "Three keyboard inputs complete practice and reach the host",
+    "where": "Guest practice and README",
+    "test": "npm run test:browser -- --grep @claim:input-practice",
+    "sandbox": "Fresh keyboard guest enters three accepted keys, sees Practice passed, and the room snapshot persists practice_ok."
+  },
+  {
+    "id": "touch-authenticity",
+    "claim": "Touch practice accepts touch input, not mouse clicks",
+    "where": "Guest touch practice",
+    "test": "npm run test:browser -- --grep @claim:touch-authenticity",
+    "sandbox": "Desktop Chromium reports no touch capability; three normal mouse clicks leave practice at 0 of 3."
+  },
+  {
+    "id": "large-text",
+    "claim": "The large-text control persists its readable text size",
+    "where": "Header and README",
+    "test": "npm run test:browser -- --grep @claim:large-text",
+    "sandbox": "Fresh context enables large text, measures a 19px root size, reloads, and confirms the setting remains active."
+  },
+  {
+    "id": "reduced-motion",
+    "claim": "Reduced-motion preferences remove interface movement",
+    "where": "Guest check, design documentation, README",
+    "test": "npm run test:browser -- --grep @claim:reduced-motion",
+    "sandbox": "Fresh reduced-motion context measures the primary action transition at zero or one microsecond."
+  },
+  {
+    "id": "privacy-no-tracking",
+    "claim": "Room Ready collects no contact data and uses no analytics, cookies, third-party scripts, fonts, or runtime services",
+    "where": "Privacy page and README",
+    "test": "npm run test:browser -- --grep @claim:privacy-no-tracking",
+    "sandbox": "Fresh privacy flow records requests and cookies, asserts same-origin traffic only, and finds no email or telephone collection."
+  },
+  {
+    "id": "game-fit-not-certification",
+    "claim": "Room Ready compares the host-selected input mix and does not certify a specific game",
+    "where": "Landing, host board, footer, Terms page, README",
+    "test": "npm run test:browser -- --grep @claim:game-fit-not-certification",
+    "sandbox": "Fresh landing page asserts the explicit no-certification copy beside the input-comparison explanation."
+  },
+  {
+    "id": "immediate-host-read",
+    "claim": "A newly created room opens its host board",
+    "where": "Primary real-room action",
+    "test": "npm run test:browser -- --grep @claim:immediate-host-read",
+    "sandbox": "Fresh browser creates a room while the first GET is forced to 404; retry recovers to the host board without showing the terminal missing-room state."
   }
 ]

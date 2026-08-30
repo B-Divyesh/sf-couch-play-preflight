@@ -1,9 +1,10 @@
 # Room Ready
 
 Room Ready is a device preflight for people hosting family, classroom, or team
-party games. Before guests are waiting, a host opens a temporary room and
-shares a QR code or four-letter fallback. Each guest checks their browser,
-connection, chosen input, and a no-install practice pad. The host sees one live
+party games. Before guests are waiting, a host opens a temporary room. Nearby
+guests can find it, scan its QR code, or enter its four-letter code. Each
+guest checks their browser, local network, chosen input, and a no-install
+practice pad. The host sees one live
 readiness board and declares which mix of touch, keyboard, and gamepad inputs
 the planned setup accepts.
 
@@ -20,10 +21,11 @@ reset or discarded from its persistent demo banner.
 ## What ships
 
 - Responsive vanilla TypeScript/Vite interface for hosts and 390px phones
-- Rust 2021 `axum` service with SQLite, structured logs, request limits,
-  secure headers, health reporting, and graceful shutdown
+- Rust 2021 `axum` service with SQLite, visible startup configuration,
+  request limits, secure headers, health reporting, and graceful shutdown
 - Six-hour ephemeral rooms for up to 12 guests, with private mutation tokens
-- QR, manual room code, full-screen TV card, and printable join card
+- Same-network room discovery with host opt-out and a manual-code fallback
+- QR, four-letter room code, full-screen TV card, and printable join card
 - Measured capability checks, three-input practice, mixed-input comparison,
   offline state, large-text control, and reduced-motion treatment
 - Local privacy and terms routes with no accounts, analytics, contact data,
@@ -58,9 +60,11 @@ npm run test:browser
 `npm test` runs the TypeScript model suite and Rust API suite, including 24
 parallel joins across multiple SQLite connections. `npm run test:browser`
 checks immediate POST-to-host-read persistence across independent HTTP
-connections, demo isolation, the same capacity boundary through the release
-server, host/guest flow, forwarded-IP rate limiting, accessibility, privacy,
-versioned service-worker update plus offline reload, and the 390px layout.
+connections and a forced transient 404, independently selectable claims,
+same-network discovery, the capacity boundary through the release server,
+authentic touch input, host/guest flow, forwarded-IP rate limiting,
+accessibility and route focus, privacy, versioned service-worker update plus
+offline reload, response policy, port-only startup, and the 390px layout.
 The production output is exactly `dist/`, with `dist/index.html` at its root.
 Every visitor-facing claim is listed in [`.factory/claims.json`](.factory/claims.json);
 the isolated sample is documented in [`.factory/demo.md`](.factory/demo.md).
@@ -72,7 +76,8 @@ Runtime configuration is environment-only:
 | `PORT` | `8080` | HTTP listen port |
 | `DATABASE_URL` | local `sqlite://room-ready.db?mode=rwc`; `/data/room-ready.db` in the container | SQLite connection |
 | `DIST_DIR` | local `dist`; `/app/dist` in the container | Built frontend directory |
-| `RUST_LOG` | library default | Structured log filter |
+| `NETWORK_HASH_KEY` | generated once and persisted beside the database | Key for one-way local-network matching |
+| `RUST_LOG` | `info` | Structured log filter |
 
 ## Container deployment
 
@@ -86,7 +91,9 @@ deployment must be constrained to exactly one always-on replica
 store, not a cross-replica database. This topology makes a committed room
 immediately visible to every subsequent request. Do not scale it horizontally
 or place its database on SMB/Azure Files. Migrate to PostgreSQL before
-requiring replica or replacement durability.
+requiring replica or replacement durability. The release gate checks this
+setting after every deployment because a platform default of three replicas
+would split room state across private SQLite files.
 
 ```sh
 docker build --build-arg BUILD_SHA="$(git rev-parse HEAD)" -t room-ready .

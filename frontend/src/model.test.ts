@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeCode, playerReady, readiness, type Player, type Room } from './model';
+import { authenticPracticeInput, normalizeCode, playerReady, readiness, type Player, type Room } from './model';
 
 const room: Room = { code: 'ABCD', created_at: '', expires_at: '', game_label: '', accepted_inputs: 'touch,gamepad', display_ready: true };
 const player: Player = { id: '1', name: 'Ari', input_kind: 'touch', browser_ok: true, input_ok: true, network_ok: true, practice_ok: true, screen_awake: false, note: '', updated_at: '' };
@@ -14,5 +14,10 @@ describe('preflight model', () => {
   it('requires a display and at least one ready guest', () => {
     expect(readiness({ room, players: [] }).roomReady).toBe(false);
     expect(readiness({ room, players: [player] }).roomReady).toBe(true);
+  });
+  it('does not treat mouse input as touch practice', () => {
+    expect(authenticPracticeInput('touch', { pointerType: 'mouse' })).toBe(false);
+    expect(authenticPracticeInput('touch', { pointerType: 'touch' })).toBe(true);
+    expect(authenticPracticeInput('gamepad', 'gamepad')).toBe(true);
   });
 });

@@ -22,6 +22,12 @@ export interface Room {
   display_ready: boolean;
 }
 
+export function authenticPracticeInput(kind: InputKind, event: Pick<PointerEvent, 'pointerType'> | KeyboardEvent | 'gamepad'): boolean {
+  if (kind === 'touch') return typeof event !== 'string' && 'pointerType' in event && event.pointerType === 'touch';
+  if (kind === 'keyboard') return event instanceof KeyboardEvent && !event.repeat && (event.key.length === 1 || event.key.startsWith('Arrow'));
+  return event === 'gamepad';
+}
+
 export interface Snapshot { room: Room; players: Player[] }
 
 export function acceptedInputs(room: Room): InputKind[] {

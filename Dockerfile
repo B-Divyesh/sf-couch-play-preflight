@@ -1,10 +1,16 @@
 FROM node:22-alpine AS web
 WORKDIR /app
+ARG BUILD_SHA=development
+ARG GIT_SHA=
+ARG SOURCE_COMMIT=
 COPY package.json package-lock.json* ./
 RUN npm ci
 COPY frontend ./frontend
 COPY scripts ./scripts
-RUN npm run build
+RUN RELEASE_SHA="$BUILD_SHA"; \
+    if [ -z "$RELEASE_SHA" ] || [ "$RELEASE_SHA" = "development" ]; then RELEASE_SHA="$GIT_SHA"; fi; \
+    if [ -z "$RELEASE_SHA" ] || [ "$RELEASE_SHA" = "development" ]; then RELEASE_SHA="$SOURCE_COMMIT"; fi; \
+    BUILD_SHA="$RELEASE_SHA" npm run build
 
 # Track current stable Rust so the locked dependency graph remains buildable.
 FROM rust:1-alpine AS server

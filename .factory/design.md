@@ -52,7 +52,9 @@ Controls are at least 48px high with 12px separation.
 ## Interaction grammar
 
 - “Open the room” is the one hero action. It creates a four-letter code and a
-  host-bound private token locally, then moves into the room board.
+  host-bound private token, keeps the token in that tab, then opens the board.
+- Guests first see opted-in rooms whose host shares their network gateway;
+  the four-letter code remains the clear manual fallback.
 - Guest cards arrive from the lower edge and settle into the same horizontal
   “bench.” Each check is label + icon + text; color is never the only signal.
 - Readiness is honest: browser/input/network/screen-wake checks are measured;
@@ -105,4 +107,6 @@ footer and is licensed as part of this MIT project.
 ### Authored graphics
 
 Status marks, room plan linework, and QR framing are original CSS/SVG authored
-for this product. No stock icon library or third-party imagery is used.
+for this product. The 1200×630 social card is a crop of the generated hero;
+the apple-touch icon is derived from the authored favicon. No stock icon
+library or third-party imagery is used.

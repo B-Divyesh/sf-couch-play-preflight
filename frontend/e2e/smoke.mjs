@@ -4,6 +4,11 @@ import { join, resolve } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { chromium } from 'playwright';
 
+const grepIndex = process.argv.indexOf('--grep');
+const grep = grepIndex >= 0 ? process.argv[grepIndex + 1] : undefined;
+const selectedClaim = grep?.startsWith('@claim:') ? grep.slice('@claim:'.length) : undefined;
+if (grep && !selectedClaim) throw new Error(`Unsupported browser-test filter: ${grep}`);
+
 const port = 18081;
 const baseUrl = `http://127.0.0.1:${port}`;
 const dataDir = await mkdtemp(join(tmpdir(), 'room-ready-browser-'));
@@ -13,211 +18,420 @@ const serverPath = resolve('server/target/release/room-ready-server');
 const version = spawnSync(serverPath, ['--version'], { encoding: 'utf8' });
 if (version.status !== 0 || !version.stdout.trim()) throw new Error(`Release binary has no embedded build identity: ${version.stderr}`);
 const embeddedBuildSha = version.stdout.trim();
+let serverOutput = '';
 const server = spawn(serverPath, [], {
-  env: { ...process.env, PORT: String(port), DATABASE_URL: `sqlite://${join(dataDir, 'room-ready.db')}?mode=rwc`, DIST_DIR: siteDir, BUILD_SHA: 'runtime-must-not-override' },
-  stdio: 'pipe',
+  env: { ...process.env, PORT: String(port), DATABASE_URL: `sqlite://${join(dataDir, 'room-ready.db')}?mode=rwc`, DIST_DIR: siteDir, NETWORK_HASH_KEY: 'browser-test-key', BUILD_SHA: 'runtime-must-not-override' },
+  stdio: ['ignore', 'pipe', 'pipe'],
 });
+server.stdout.on('data', (chunk) => { serverOutput += chunk.toString(); });
+server.stderr.on('data', (chunk) => { serverOutput += chunk.toString(); });
 
-async function waitForServer() {
-  for (let attempt = 0; attempt < 50; attempt += 1) {
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const forwarded = (address) => ({ 'content-type': 'application/json', 'x-forwarded-for': address });
+
+async function waitFor(url, attempts = 60, output = () => serverOutput) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
-      const response = await fetch(`${baseUrl}/health`);
-      if (response.ok) return;
+      const response = await fetch(url);
+      if (response.ok) return response;
     } catch { /* startup race */ }
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+    await new Promise((done) => setTimeout(done, 100));
   }
-  throw new Error(`Room Ready did not start: ${(await new Response(server.stderr).text())}`);
+  throw new Error(`Room Ready did not start at ${url}: ${output()}`);
 }
 
-try {
-  await waitForServer();
+async function createRoom(gameLabel = 'Browser test', discoverable = true, address = '198.51.100.40') {
+  const response = await fetch(`${baseUrl}/api/rooms`, {
+    method: 'POST',
+    headers: forwarded(address),
+    body: JSON.stringify({ game_label: gameLabel, discoverable }),
+  });
+  assert(response.status === 200, `Create room returned ${response.status}`);
+  return response.json();
+}
+
+async function closeRoom(room) {
+  await fetch(`${baseUrl}/api/rooms/${room.code}`, {
+    method: 'DELETE',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ host_token: room.host_token }),
+  });
+}
+
+async function hostPage(browser, room, options = {}) {
+  const context = await browser.newContext(options);
+  await context.addInitScript(({ code, token }) => sessionStorage.setItem(`host:${code}`, token), { code: room.code, token: room.host_token });
+  const page = await context.newPage();
+  await page.goto(`${baseUrl}/host?room=${room.code}`, { waitUntil: 'domcontentloaded' });
+  await page.locator('.room-code').waitFor();
+  return { context, page };
+}
+
+const claims = {
+  async 'demo-isolated'({ browser }) {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.goto(`${baseUrl}/demo`, { waitUntil: 'domcontentloaded' });
+    await page.getByText('Demo — sample data, nothing is saved').waitFor();
+    const keys = await page.evaluate(() => Object.keys(sessionStorage));
+    assert(keys.length > 0 && keys.every((key) => key.startsWith('demo:')), `Demo storage is not isolated: ${keys.join(', ')}`);
+    await page.getByRole('button', { name: 'Reset demo' }).click();
+    await page.getByText('Family picture quiz').waitFor();
+    await page.getByRole('link', { name: 'Start for real' }).click();
+    await page.waitForURL(`${baseUrl}/`);
+    assert(!(await page.evaluate(() => Object.keys(sessionStorage))).some((key) => key.startsWith('demo:')), 'Demo data remained after Start for real');
+    await context.close();
+  },
+
+  async 'sample-guests'({ browser }) {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.goto(`${baseUrl}/demo`, { waitUntil: 'domcontentloaded' });
+    await page.getByRole('heading', { name: 'See a ready room before you host.' }).waitFor();
+    assert(await page.locator('.player').count() === 4, 'Demo did not contain exactly four sample guests');
+    for (const name of ['Mina', 'Tom', 'Ari', 'Jo']) await page.getByRole('heading', { name }).waitFor();
+    await context.close();
+  },
+
+  async 'demo-privacy'({ browser }) {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    const requests = [];
+    page.on('request', (request) => requests.push(request.url()));
+    await page.goto(`${baseUrl}/demo`, { waitUntil: 'networkidle' });
+    await page.getByText('Demo — sample data, nothing is saved').waitFor();
+    assert(requests.every((url) => url.startsWith(baseUrl)), `Demo made a third-party request: ${requests.join(', ')}`);
+    assert(requests.every((url) => !new URL(url).pathname.startsWith('/api/')), 'Demo contacted the room API');
+    await context.close();
+  },
+
+  async 'temporary-rooms'() {
+    const before = Date.now();
+    const room = await createRoom('Expiry check');
+    const lifetime = Date.parse(room.expires_at) - before;
+    assert(lifetime >= (5 * 60 + 59) * 60 * 1000 && lifetime <= (6 * 60 + 1) * 60 * 1000, `Room lifetime was not six hours: ${lifetime}ms`);
+    await closeRoom(room);
+  },
+
+  async 'no-account-or-install'({ browser }) {
+    const context = await browser.newContext();
+    const host = await context.newPage();
+    await host.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+    assert(await host.locator('input[type="email"], input[type="password"], link[rel="manifest"]').count() === 0, 'An account or install control appeared');
+    await host.getByRole('button', { name: /Open a real room/ }).click();
+    await host.waitForURL(/\/host\?room=/);
+    await host.locator('.room-code').waitFor();
+    await context.close();
+  },
+
+  async 'offline-reload'({ browser }) {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.goto(`${baseUrl}/demo`, { waitUntil: 'domcontentloaded' });
+    await page.evaluate(() => navigator.serviceWorker.ready);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller));
+    await page.getByText('Demo — sample data, nothing is saved').waitFor();
+    await context.setOffline(true);
+    await page.goto(`${baseUrl}/demo`, { waitUntil: 'domcontentloaded', timeout: 15_000 });
+    await page.getByText('You’re offline. Existing results stay visible; updates will retry when you reconnect.').waitFor();
+    await page.getByRole('heading', { name: 'See a ready room before you host.' }).waitFor();
+    await context.close();
+  },
+
+  async 'local-room-discovery'({ browser }) {
+    const context = await browser.newContext();
+    const host = await context.newPage();
+    await host.goto(baseUrl);
+    await host.getByLabel('What are you playing? Optional').fill('Same network quiz');
+    await host.getByRole('button', { name: /Open a real room/ }).click();
+    await host.locator('.room-code').waitFor();
+    const code = (await host.locator('.room-code').textContent()).trim();
+    const guest = await context.newPage();
+    await guest.goto(`${baseUrl}/join`, { waitUntil: 'domcontentloaded' });
+    await guest.getByRole('button', { name: new RegExp(`${code}.*Same network quiz`) }).waitFor();
+    await guest.getByRole('button', { name: new RegExp(code) }).click();
+    assert(await guest.getByLabel('Room code').inputValue() === code, 'Network discovery did not select the room');
+    await guest.getByLabel('Room code').fill('ABCD');
+    assert(await guest.getByLabel('Room code').inputValue() === 'ABCD', 'Manual room-code fallback is unavailable');
+    await context.close();
+  },
+
+  async 'join-card'({ browser }) {
+    const room = await createRoom('Join card check');
+    const { context, page } = await hostPage(browser, room);
+    await page.locator('#qr').waitFor();
+    await page.waitForFunction(() => document.querySelector('#qr')?.naturalWidth > 0);
+    await page.evaluate(() => { window.print = () => { document.documentElement.dataset.printCalled = 'true'; }; });
+    await page.getByRole('button', { name: 'Print join card' }).click();
+    assert(await page.locator('html').getAttribute('data-print-called') === 'true', 'Print join card did not invoke printing');
+    await page.getByRole('button', { name: 'TV view' }).click();
+    assert(await page.locator('body').evaluate((body) => body.classList.contains('presenting')), 'TV view did not activate');
+    await context.close();
+    await closeRoom(room);
+  },
+
+  async 'guest-capacity'() {
+    const room = await createRoom('Capacity check');
+    const responses = await Promise.all(Array.from({ length: 24 }, (_, index) => fetch(`${baseUrl}/api/rooms/${room.code}/join`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: `Guest ${index + 1}`, input_kind: 'touch' }),
+    })));
+    assert(responses.filter((response) => response.status === 200).length === 12, 'Room did not accept exactly 12 guests');
+    assert(responses.filter((response) => response.status === 409).length === 12, 'Room did not reject every guest above capacity');
+    const snapshot = await fetch(`${baseUrl}/api/rooms/${room.code}`).then((response) => response.json());
+    assert(snapshot.players.length === 12, `Room persisted ${snapshot.players.length} guests instead of 12`);
+    await closeRoom(room);
+  },
+
+  async 'capability-checks'({ browser }) {
+    const room = await createRoom('Capability check');
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.goto(`${baseUrl}/join?room=${room.code}`);
+    await page.getByLabel('Name shown to the host').fill('Sam');
+    await page.getByRole('radio', { name: /Keyboard/ }).check();
+    await page.getByRole('button', { name: 'Join and run checks' }).click();
+    for (const label of ['Secure browser', 'Same local network', 'Keyboard', 'Standard motion']) await page.getByText(label, { exact: true }).waitFor();
+    await context.close();
+    await closeRoom(room);
+  },
+
+  async 'input-practice'({ browser }) {
+    const room = await createRoom('Practice check');
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.goto(`${baseUrl}/join?room=${room.code}`);
+    await page.getByLabel('Name shown to the host').fill('Key guest');
+    await page.getByRole('radio', { name: /Keyboard/ }).check();
+    await page.getByRole('button', { name: 'Join and run checks' }).click();
+    const pad = page.locator('#practice-pad');
+    await pad.focus();
+    await pad.press('a'); await pad.press('ArrowRight'); await pad.press('b');
+    await page.getByText('Practice passed.').waitFor();
+    const snapshot = await fetch(`${baseUrl}/api/rooms/${room.code}`).then((response) => response.json());
+    assert(snapshot.players[0]?.practice_ok === true, 'Practice result did not persist for the host');
+    await context.close();
+    await closeRoom(room);
+  },
+
+  async 'touch-authenticity'({ browser }) {
+    const room = await createRoom('Touch authenticity');
+    const context = await browser.newContext({ hasTouch: false });
+    const page = await context.newPage();
+    await page.goto(`${baseUrl}/join?room=${room.code}`);
+    await page.getByLabel('Name shown to the host').fill('Mouse guest');
+    await page.getByRole('button', { name: 'Join and run checks' }).click();
+    await page.getByText('The browser cannot see this input yet.').waitFor();
+    await page.locator('#practice-pad').click();
+    await page.locator('#practice-pad').click();
+    await page.locator('#practice-pad').click();
+    assert((await page.locator('#practice-count').textContent()) === '0 of 3', 'Mouse clicks were counted as touch practice');
+    assert(await page.getByText('Practice passed.').count() === 0, 'Mouse clicks incorrectly passed touch practice');
+    await context.close();
+    await closeRoom(room);
+  },
+
+  async 'large-text'({ browser }) {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.goto(baseUrl);
+    await page.getByRole('button', { name: 'Large text' }).click();
+    assert(await page.locator('html').evaluate((element) => getComputedStyle(element).fontSize === '19px'), 'Large text did not reach 19px');
+    await page.reload();
+    assert(await page.getByRole('button', { name: 'Standard text' }).getAttribute('aria-pressed') === 'true', 'Large-text preference did not persist');
+    await context.close();
+  },
+
+  async 'reduced-motion'({ browser }) {
+    const context = await browser.newContext({ reducedMotion: 'reduce' });
+    const page = await context.newPage();
+    await page.goto(baseUrl);
+    const duration = await page.locator('.primary').evaluate((element) => getComputedStyle(element).transitionDuration);
+    assert(Number.parseFloat(duration) <= 0.000001, `Reduced-motion transition remained ${duration}`);
+    await context.close();
+  },
+
+  async 'privacy-no-tracking'({ browser }) {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    const external = [];
+    page.on('request', (request) => { if (!request.url().startsWith(baseUrl)) external.push(request.url()); });
+    await page.goto(`${baseUrl}/privacy`, { waitUntil: 'networkidle' });
+    await page.getByText('does not ask for an account, email address, or contact details').waitFor();
+    assert((await context.cookies()).length === 0, 'Product set a cookie');
+    assert(external.length === 0, `Product contacted a third party: ${external.join(', ')}`);
+    assert(await page.locator('input[type="email"], input[type="tel"]').count() === 0, 'Product requested contact data');
+    await context.close();
+  },
+
+  async 'game-fit-not-certification'({ browser }) {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.goto(baseUrl);
+    await page.getByText('without pretending we tested your game').waitFor();
+    await page.getByText('It does not certify a specific game.').waitFor();
+    await context.close();
+  },
+
+  async 'immediate-host-read'({ browser }) {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    let blockedFirstRead = false;
+    await page.route(/\/api\/rooms\/[A-Z]{4}$/, async (route) => {
+      if (route.request().method() === 'GET' && !blockedFirstRead) {
+        blockedFirstRead = true;
+        await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: 'Room not found or expired' }) });
+      } else await route.continue();
+    });
+    await page.goto(baseUrl);
+    await page.getByRole('button', { name: /Open a real room/ }).click();
+    await page.waitForURL(/\/host\?room=/);
+    await page.locator('.room-code').waitFor({ timeout: 10_000 });
+    assert(blockedFirstRead, 'The first host read was not intercepted');
+    assert(await page.getByRole('heading', { name: 'We couldn’t find this room.' }).count() === 0, 'A transient first 404 replaced the host board');
+    await context.close();
+  },
+};
+
+async function runGeneralQa(browser) {
   const health = await fetch(`${baseUrl}/health`);
   const healthBody = await health.json();
-  if (healthBody.build_sha !== embeddedBuildSha) throw new Error(`Health identity ${healthBody.build_sha} does not match the immutable binary ${embeddedBuildSha}`);
+  assert(healthBody.build_sha === embeddedBuildSha, `Health identity ${healthBody.build_sha} does not match ${embeddedBuildSha}`);
+  assert(serverOutput.includes('database_config') && serverOutput.includes('network_key_config'), `Startup configuration line was missing: ${serverOutput}`);
+
   const home = await fetch(baseUrl);
   for (const [header, expected] of Object.entries({
     'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
     'x-content-type-options': 'nosniff',
     'referrer-policy': 'no-referrer',
     'x-frame-options': 'DENY',
-  })) {
-    if (home.headers.get(header) !== expected) throw new Error(`Missing or changed ${header}`);
-  }
+  })) assert(home.headers.get(header) === expected, `Missing or changed ${header}`);
+  assert(home.headers.get('set-cookie') === null, 'Home response set a cookie');
   const homeHtml = await home.text();
+  for (const marker of ['rel="canonical"', 'property="og:image"', 'name="twitter:card"', 'rel="apple-touch-icon"']) assert(homeHtml.includes(marker), `HTML metadata is missing ${marker}`);
   const entryAsset = homeHtml.match(/<script type="module" crossorigin src="(\/assets\/index-[^"]+\.js)"><\/script>/)?.[1];
-  if (!entryAsset) throw new Error('Production entry asset is missing from the HTML shell');
+  assert(entryAsset, 'Production entry asset is missing');
   const asset = await fetch(`${baseUrl}${entryAsset}`);
-  if (asset.headers.get('cache-control') !== 'public, max-age=31536000, immutable') throw new Error('Hashed assets are not immutable-cacheable');
+  assert(asset.headers.get('cache-control') === 'public, max-age=31536000, immutable', 'Hashed asset cache policy changed');
+  assert((await fetch(`${baseUrl}/demo`)).status === 200, 'Direct demo route did not return 200');
+  assert((await fetch(`${baseUrl}/not-a-real-route`)).status === 404, 'Unknown route did not return 404');
+  const missingApi = await fetch(`${baseUrl}/api/not-a-route`);
+  assert(missingApi.status === 404 && missingApi.headers.get('content-type')?.includes('application/json'), 'Unknown API route did not return JSON 404');
 
-  // Regression for verification-4 / controller evidence: a host read is a
-  // separate HTTP connection immediately after POST. It must see the commit.
-  const persistenceCreate = await fetch(`${baseUrl}/api/rooms`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', connection: 'close', 'x-forwarded-for': '198.51.100.80' },
-    body: JSON.stringify({ game_label: 'Immediate host read regression' }),
-  });
-  if (persistenceCreate.status !== 200) throw new Error(`Create for immediate host read returned ${persistenceCreate.status}`);
-  const persistenceRoom = await persistenceCreate.json();
-  const immediateHostRead = await fetch(`${baseUrl}/api/rooms/${persistenceRoom.code}`, { headers: { connection: 'close', 'x-forwarded-for': '198.51.100.81' } });
-  if (immediateHostRead.status !== 200) throw new Error(`POST /api/rooms then immediate host GET returned ${immediateHostRead.status}`);
-  const immediateSnapshot = await immediateHostRead.json();
-  if (immediateSnapshot.room.code !== persistenceRoom.code) throw new Error('Immediate host read returned the wrong room');
-  // @claim:temporary-rooms — the API-created room advertises a six-hour
-  // lifespan rather than retaining a room indefinitely.
-  const roomLifetime = Date.parse(persistenceRoom.expires_at) - Date.now();
-  if (roomLifetime < (5 * 60 + 59) * 60 * 1000 || roomLifetime > (6 * 60 + 1) * 60 * 1000) throw new Error(`Room lifetime was not six hours: ${roomLifetime}ms`);
-  await fetch(`${baseUrl}/api/rooms/${persistenceRoom.code}`, {
-    method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ host_token: persistenceRoom.host_token }),
-  });
+  const room = await createRoom('Independent connection regression', true, '198.51.100.80');
+  const immediate = await fetch(`${baseUrl}/api/rooms/${room.code}`, { headers: { connection: 'close', 'x-forwarded-for': '198.51.100.81' } });
+  assert(immediate.status === 200, `POST then immediate independent GET returned ${immediate.status}`);
+  assert((await immediate.json()).room.code === room.code, 'Immediate read returned the wrong room');
+  const sameNetwork = await fetch(`${baseUrl}/api/rooms/${room.code}/network`, { headers: { 'x-forwarded-for': '198.51.100.80' } }).then((response) => response.json());
+  const otherNetwork = await fetch(`${baseUrl}/api/rooms/${room.code}/network`, { headers: { 'x-forwarded-for': '198.51.100.81' } }).then((response) => response.json());
+  assert(sameNetwork.same_network && !otherNetwork.same_network, 'Network comparison did not distinguish clients');
+  await closeRoom(room);
 
-  // Regression for verification-3: admission must stay capped even when every
-  // guest reaches the count check at the same time.
-  const capacityRoomResponse = await fetch(`${baseUrl}/api/rooms`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ game_label: 'Parallel join regression' }),
-  });
-  const capacityRoom = await capacityRoomResponse.json();
-  const parallelJoins = await Promise.all(Array.from({ length: 24 }, (_, index) => fetch(`${baseUrl}/api/rooms/${capacityRoom.code}/join`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ name: `Guest ${index + 1}`, input_kind: 'touch' }),
-  })));
-  const acceptedJoins = parallelJoins.filter((response) => response.status === 200).length;
-  const rejectedJoins = parallelJoins.filter((response) => response.status === 409).length;
-  if (acceptedJoins !== 12 || rejectedJoins !== 12) throw new Error(`Parallel admission returned ${acceptedJoins} accepted and ${rejectedJoins} full responses`);
-  const capacitySnapshot = await fetch(`${baseUrl}/api/rooms/${capacityRoom.code}`).then((response) => response.json());
-  if (capacitySnapshot.players.length !== 12) throw new Error(`Parallel admission persisted ${capacitySnapshot.players.length} guests`);
-  await fetch(`${baseUrl}/api/rooms/${capacityRoom.code}`, {
-    method: 'DELETE',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ host_token: capacityRoom.host_token }),
-  });
-
-  const limitedResponses = await Promise.all(Array.from({ length: 50 }, () => fetch(`${baseUrl}/api/rooms/ZZZZ`, {
-    headers: { 'x-forwarded-for': '198.51.100.20' },
-  })));
+  const invalid = await fetch(`${baseUrl}/api/rooms/ABC1`);
+  assert(invalid.status === 400 && invalid.headers.get('content-type')?.includes('application/json'), 'Invalid API input did not return JSON 400');
+  const limitedResponses = await Promise.all(Array.from({ length: 55 }, () => fetch(`${baseUrl}/api/rooms/ZZZZ`, { headers: { 'x-forwarded-for': '198.51.100.20' } })));
   const limited = limitedResponses.find((response) => response.status === 429);
-  if (!limited || Number(limited.headers.get('retry-after')) < 1) throw new Error('API rate limit did not return 429 with a positive Retry-After');
-  const independentClient = await fetch(`${baseUrl}/api/rooms/ZZZZ`, { headers: { 'x-forwarded-for': '198.51.100.21' } });
-  if (independentClient.status === 429) throw new Error('API rate limit did not key the first forwarded client IP independently');
+  assert(limited && Number(limited.headers.get('retry-after')) >= 1, 'Rate limit did not return 429 with Retry-After');
+  assert((await fetch(`${baseUrl}/api/rooms/ZZZZ`, { headers: { 'x-forwarded-for': '198.51.100.21' } })).status !== 429, 'Rate limit was not keyed per forwarded client');
 
-  const browser = await chromium.launch({ headless: true });
-  // @claim:demo-isolated @claim:demo-privacy — a direct /demo visit is immediately useful, uses
-  // only the demo: storage namespace, and never reaches a real room endpoint.
-  const demoContext = await browser.newContext();
-  const demo = await demoContext.newPage();
-  const demoRequests = [];
-  demo.on('request', (request) => demoRequests.push(request.url()));
-  await demo.goto(`${baseUrl}/demo`, { waitUntil: 'networkidle' });
-  await demo.getByRole('heading', { name: 'See a ready room before you host.' }).waitFor();
-  await demo.getByText('Demo — sample data, nothing is saved').waitFor();
-  await demo.getByText('Mina').waitFor();
-  // @claim:sample-guests — the one-click sample is a real-looking, populated
-  // room rather than an empty placeholder.
-  if (await demo.locator('.player').count() !== 4) throw new Error('Demo did not contain four sample guests');
-  if (demoRequests.some((url) => !url.startsWith(baseUrl) || new URL(url).pathname.startsWith('/api/'))) throw new Error('Demo contacted a non-demo service');
-  const demoKeys = await demo.evaluate(() => Object.keys(sessionStorage));
-  if (!demoKeys.length || demoKeys.some((key) => !key.startsWith('demo:'))) throw new Error(`Demo storage is not isolated: ${demoKeys.join(', ')}`);
-  await demo.getByRole('button', { name: 'Reset demo' }).click();
-  await demo.getByText('Family picture quiz').waitFor();
-  await demo.getByRole('link', { name: 'Start for real' }).click();
-  await demo.waitForURL(`${baseUrl}/`);
-  const keysAfterLeavingDemo = await demo.evaluate(() => Object.keys(sessionStorage));
-  if (keysAfterLeavingDemo.some((key) => key.startsWith('demo:'))) throw new Error('Demo data remained after starting for real');
-  await demoContext.close();
-
-  // The production CSP correctly disallows inline scripts. Bypass it only in
-  // this test context so axe can be injected without weakening the product.
-  const hostContext = await browser.newContext({ bypassCSP: true });
-  const host = await hostContext.newPage();
+  const a11yContext = await browser.newContext({ bypassCSP: true });
+  const page = await a11yContext.newPage();
   const pageErrors = [];
-  const externalRequests = [];
-  host.on('pageerror', (error) => pageErrors.push(error.message));
-  host.on('request', (request) => { if (!request.url().startsWith(baseUrl)) externalRequests.push(request.url()); });
-  await host.goto(baseUrl, { waitUntil: 'networkidle' });
-  // @claim:no-account-or-install — the complete host-and-guest flow starts in
-  // the browser with no account fields and no install manifest.
-  const accountOrInstallControls = await host.locator('input[type="email"], input[type="password"], link[rel="manifest"]').count();
-  if (accountOrInstallControls) throw new Error('The no-account, no-install start flow changed');
-  await host.getByLabel('What are you playing? Optional').fill('Keyboard trivia');
-  await host.getByRole('button', { name: /Open a real room/ }).click();
-  await host.waitForURL(/\/host\?room=/);
-  const code = await host.locator('.room-code').textContent();
-  if (!code || !/^[A-Z]{4}$/.test(code)) throw new Error('Host did not receive a room code');
-
-  const guestContext = await browser.newContext();
-  const guest = await guestContext.newPage();
-  guest.on('pageerror', (error) => pageErrors.push(error.message));
-  await guest.goto(`${baseUrl}/join?room=${code}`);
-  await guest.getByLabel('Name shown to the host').fill('Sam');
-  await guest.getByRole('radio', { name: /Keyboard/ }).check();
-  await guest.getByRole('button', { name: 'Join and run checks' }).click();
-  const practice = guest.locator('#practice-pad');
-  await practice.focus();
-  await practice.press('a');
-  await practice.press('ArrowRight');
-  await practice.press('b');
-  await guest.getByText('Practice passed.').waitFor();
-
-  await host.getByLabel('Big screen is connected and visible').check();
-  await host.getByRole('button', { name: 'Save session fit' }).click();
-  await host.getByText('The room is ready.').waitFor();
-
-  await host.addScriptTag({ path: resolve('node_modules/axe-core/axe.min.js') });
-  const violations = await host.evaluate(async () => (await globalThis.axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa'] } })).violations);
-  if (violations.length) throw new Error(`axe violations: ${violations.map((violation) => violation.id).join(', ')}`);
-  if (pageErrors.length) throw new Error(`Browser errors: ${pageErrors.join('; ')}`);
-  if (externalRequests.length) throw new Error(`Unexpected third-party requests: ${externalRequests.join(', ')}`);
-
-  const routeA11yContext = await browser.newContext({ bypassCSP: true });
-  const routeA11y = await routeA11yContext.newPage();
-  for (const path of ['/', '/demo', '/privacy', '/terms']) {
-    await routeA11y.goto(`${baseUrl}${path}`, { waitUntil: 'networkidle' });
-    await routeA11y.addScriptTag({ path: resolve('node_modules/axe-core/axe.min.js') });
-    const routeViolations = await routeA11y.evaluate(async () => (await globalThis.axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa'] } })).violations);
-    if (routeViolations.length) throw new Error(`axe violations on ${path}: ${routeViolations.map((violation) => violation.id).join(', ')}`);
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  for (const path of ['/', '/demo', '/privacy', '/terms', '/join', '/not-a-real-route']) {
+    const response = await page.goto(`${baseUrl}${path}`, { waitUntil: 'domcontentloaded' });
+    if (path === '/not-a-real-route') assert(response.status() === 404, 'Browser missing route response was not 404');
+    await page.addScriptTag({ path: resolve('node_modules/axe-core/axe.min.js') });
+    const violations = await page.evaluate(async () => (await globalThis.axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa'] } })).violations);
+    assert(violations.length === 0, `axe violations on ${path}: ${violations.map((item) => item.id).join(', ')}`);
+    assert(await page.locator('h1').count() === 1, `${path} does not have exactly one h1`);
   }
-  await routeA11yContext.close();
+  await page.goto(baseUrl);
+  await page.keyboard.press('Tab');
+  assert(await page.locator(':focus').getAttribute('class') === 'skip-link', 'First Tab did not focus the skip link');
+  await page.keyboard.press('Enter');
+  assert(await page.evaluate(() => document.activeElement?.id) === 'main', 'Skip link did not move focus to main');
+  await page.getByRole('link', { name: 'Demo', exact: true }).click();
+  await page.waitForFunction(() => document.activeElement?.tagName === 'H1');
+  assert(await page.evaluate(() => document.activeElement?.tagName) === 'H1', 'SPA navigation did not focus the new h1');
+  assert((await page.locator('#route-status').textContent()).includes('See a ready room'), 'Route change was not announced');
+  assert(pageErrors.length === 0, `Browser errors: ${pageErrors.join('; ')}`);
+  await a11yContext.close();
 
-  // @claim:offline-reload — use an isolated context to prove a versioned
-  // worker removes its stale cache and still serves the shell offline.
+  const mobileContext = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, bypassCSP: true });
+  const mobile = await mobileContext.newPage();
+  await mobile.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+  const mobileLayout = await mobile.evaluate(() => ({ width: innerWidth, scrollWidth: document.documentElement.scrollWidth }));
+  assert(mobileLayout.scrollWidth <= mobileLayout.width, `390px page overflows (${mobileLayout.scrollWidth}px)`);
+  const smallTargets = await mobile.locator('a, button').evaluateAll((elements) => elements.filter((element) => {
+    const box = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    const visuallyHiddenSkipLink = element.classList.contains('skip-link') && document.activeElement !== element;
+    return !visuallyHiddenSkipLink && style.display !== 'none' && style.visibility !== 'hidden' && (box.width < 44 || box.height < 44);
+  }).map((element) => ({ text: element.textContent?.trim(), box: element.getBoundingClientRect().toJSON() })));
+  assert(smallTargets.length === 0, `Mobile targets below 44px: ${JSON.stringify(smallTargets)}`);
+  await mobile.addScriptTag({ path: resolve('node_modules/axe-core/axe.min.js') });
+  const mobileViolations = await mobile.evaluate(async () => (await globalThis.axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa'] } })).violations);
+  assert(mobileViolations.length === 0, `Mobile axe violations: ${mobileViolations.map((item) => item.id).join(', ')}`);
+  await mobile.evaluate(() => { document.documentElement.style.fontSize = '32px'; });
+  assert(await mobile.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'Page overflowed at 200% text');
+  await mobileContext.close();
+
+  const serviceWorkerPath = join(siteDir, 'sw.js');
+  const workerBefore = await readFile(serviceWorkerPath, 'utf8');
   const updateContext = await browser.newContext();
   const updatePage = await updateContext.newPage();
-  await updatePage.goto(baseUrl, { waitUntil: 'networkidle' });
+  await updatePage.goto(baseUrl, { waitUntil: 'domcontentloaded' });
   await updatePage.evaluate(() => navigator.serviceWorker.ready);
-  await updatePage.reload({ waitUntil: 'networkidle' });
+  await updatePage.reload({ waitUntil: 'domcontentloaded' });
   await updatePage.waitForFunction(() => Boolean(navigator.serviceWorker.controller));
-  const cacheBeforeUpdate = await updatePage.evaluate(() => caches.keys());
-  const oldCache = cacheBeforeUpdate.find((cache) => cache.startsWith('room-ready-shell-'));
-  if (!oldCache) throw new Error(`Initial service worker cache was missing: ${cacheBeforeUpdate.join(', ')}`);
-  const serviceWorkerPath = join(siteDir, 'sw.js');
-  const serviceWorker = await readFile(serviceWorkerPath, 'utf8');
+  const oldCache = (await updatePage.evaluate(() => caches.keys())).find((name) => name.startsWith('room-ready-shell-'));
+  assert(oldCache, 'Initial service-worker cache was missing');
   const newCache = 'room-ready-shell-update-regression';
-  await writeFile(serviceWorkerPath, serviceWorker.replace(oldCache, newCache));
+  await writeFile(serviceWorkerPath, workerBefore.replace(oldCache, newCache));
   await updatePage.evaluate(async () => { await (await navigator.serviceWorker.getRegistration())?.update(); });
   await updatePage.waitForFunction(async ({ stale, current }) => {
     const keys = await caches.keys();
     return keys.includes(current) && !keys.includes(stale);
   }, { stale: oldCache, current: newCache });
-  await updateContext.setOffline(true);
-  await updatePage.reload({ waitUntil: 'domcontentloaded' });
-  await updatePage.getByText('You’re offline. Existing results stay visible; updates will retry when you reconnect.').waitFor();
   await updateContext.close();
 
-  const mobileContext = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, bypassCSP: true });
-  const mobile = await mobileContext.newPage();
-  await mobile.goto(baseUrl, { waitUntil: 'networkidle' });
-  const mobileLayout = await mobile.evaluate(() => ({ width: innerWidth, scrollWidth: document.documentElement.scrollWidth }));
-  if (mobileLayout.scrollWidth > mobileLayout.width) throw new Error(`390px page overflows horizontally (${mobileLayout.scrollWidth}px)`);
-  await mobile.addScriptTag({ path: resolve('node_modules/axe-core/axe.min.js') });
-  const mobileViolations = await mobile.evaluate(async () => (await globalThis.axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa'] } })).violations);
-  if (mobileViolations.length) throw new Error(`axe violations at 390px: ${mobileViolations.map((violation) => violation.id).join(', ')}`);
-  await mobileContext.close();
-  await guestContext.close();
-  await hostContext.close();
-  await browser.close();
-  console.log('Immediate room persistence, demo isolation, parallel admission, forwarded-IP rate policy, host/keyboard guest, axe, privacy, service-worker update/offline, and 390px mobile smoke passed.');
+  const portOnlyDir = await mkdtemp(join(tmpdir(), 'room-ready-port-only-'));
+  const portOnlyPort = 18082;
+  let portOnlyOutput = '';
+  const portOnly = spawn(serverPath, [], { cwd: portOnlyDir, env: { PATH: process.env.PATH, PORT: String(portOnlyPort) }, stdio: ['ignore', 'pipe', 'pipe'] });
+  portOnly.stdout.on('data', (chunk) => { portOnlyOutput += chunk.toString(); });
+  portOnly.stderr.on('data', (chunk) => { portOnlyOutput += chunk.toString(); });
+  try {
+    await waitFor(`http://127.0.0.1:${portOnlyPort}/health`, 60, () => portOnlyOutput);
+    await new Promise((done) => setTimeout(done, 100));
+    assert(portOnlyOutput.includes('database_config') && portOnlyOutput.includes('defaulted'), `Port-only startup did not log defaulted database config: ${portOnlyOutput}`);
+    assert(portOnlyOutput.includes('network_key_config') && portOnlyOutput.includes('generated'), `Port-only startup did not log generated key config: ${portOnlyOutput}`);
+  } finally {
+    portOnly.kill('SIGTERM');
+    await rm(portOnlyDir, { recursive: true, force: true });
+  }
+}
+
+try {
+  await waitFor(`${baseUrl}/health`);
+  const browser = await chromium.launch({ headless: true });
+  try {
+    if (selectedClaim) {
+      assert(claims[selectedClaim], `No independently selectable test exists for @claim:${selectedClaim}`);
+      await claims[selectedClaim]({ browser });
+      console.log(`PASS @claim:${selectedClaim}`);
+    } else {
+      for (const [id, test] of Object.entries(claims)) {
+        await test({ browser });
+        console.log(`PASS @claim:${id}`);
+      }
+      await runGeneralQa(browser);
+      console.log('PASS complete browser, API, accessibility, privacy, offline/update, response-policy, startup, desktop, and 390px mobile QA');
+    }
+  } finally {
+    await browser.close();
+  }
 } finally {
   server.kill('SIGTERM');
   await rm(dataDir, { recursive: true, force: true });

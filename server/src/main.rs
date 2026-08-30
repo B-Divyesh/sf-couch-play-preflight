@@ -36,6 +36,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 const MAX_GUESTS: i64 = 12;
+const DURABLE_DATABASE_FILE: &str = "room-ready.sqlite3";
 
 #[derive(Clone)]
 struct AppState {
@@ -302,10 +303,14 @@ fn build_sha() -> &'static str {
 
 fn default_database_url() -> String {
     if FsPath::new("/data").is_dir() {
-        "sqlite:///data/room-ready.db?mode=rwc".into()
+        durable_database_url()
     } else {
         "sqlite://room-ready.db?mode=rwc".into()
     }
+}
+
+fn durable_database_url() -> String {
+    format!("sqlite:///data/{DURABLE_DATABASE_FILE}?mode=rwc")
 }
 
 fn sqlite_options(database_url: &str) -> Result<SqliteConnectOptions, sqlx::Error> {
@@ -738,6 +743,14 @@ mod tests {
             "Family night"
         );
         assert!(clean_text("way too long".into(), 4).is_err());
+    }
+
+    #[test]
+    fn container_database_path_is_durable_and_separate_from_the_legacy_file() {
+        assert_eq!(
+            durable_database_url(),
+            "sqlite:///data/room-ready.sqlite3?mode=rwc"
+        );
     }
 
     #[tokio::test]

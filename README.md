@@ -77,7 +77,7 @@ Runtime configuration is environment-only:
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `PORT` | `8080` | HTTP listen port |
-| `DATABASE_URL` | local `sqlite://room-ready.db?mode=rwc`; `/data/room-ready.db` in the container | SQLite connection |
+| `DATABASE_URL` | local `sqlite://room-ready.db?mode=rwc`; `/data/room-ready.sqlite3` in the container | SQLite connection |
 | `DIST_DIR` | local `dist`; `/app/dist` in the container | Built frontend directory |
 | `NETWORK_HASH_KEY` | generated once and persisted beside the database | Key for one-way local-network matching |
 | `RUST_LOG` | `info` | Structured log filter |

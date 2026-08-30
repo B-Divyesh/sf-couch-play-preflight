@@ -32,7 +32,7 @@ use tower_http::{
     set_header::SetResponseHeaderLayer,
     trace::TraceLayer,
 };
-use tracing::info;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 const MAX_GUESTS: i64 = 12;
@@ -179,7 +179,7 @@ async fn main() {
         .connect_with(database_options)
         .await
         .expect("connect database");
-    migrate(&db).await.expect("migrate database");
+    migrate_with_retry(&db).await.expect("migrate database");
     let (network_key, network_key_config) = load_network_key().expect("load network match key");
     let state = AppState {
         db,
@@ -370,6 +370,25 @@ async fn migrate(db: &SqlitePool) -> Result<(), sqlx::Error> {
             .await?;
     }
     Ok(())
+}
+
+/// Azure Files can retain SQLite's advisory lock briefly while a replaced
+/// replica exits. Keep the one new replica alive and retry its idempotent
+/// migration instead of crash-looping against that lock.
+async fn migrate_with_retry(db: &SqlitePool) -> Result<(), sqlx::Error> {
+    let mut last_error = None;
+    for attempt in 1..=12 {
+        match migrate(db).await {
+            Ok(()) => return Ok(()),
+            Err(error) if attempt < 12 => {
+                warn!(attempt, %error, "database migration is locked; retrying");
+                last_error = Some(error);
+                tokio::time::sleep(StdDuration::from_secs(5)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last_error.expect("migration attempts include at least one error"))
 }
 
 fn client_network(headers: &HeaderMap) -> String {

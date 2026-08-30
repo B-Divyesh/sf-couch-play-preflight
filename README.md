@@ -18,7 +18,7 @@ Live product: <https://couch-play-preflight.sociobot.in>
 - Responsive vanilla TypeScript/Vite interface for hosts and 390px phones
 - Rust 2021 `axum` service with SQLite, structured logs, request limits,
   secure headers, health reporting, and graceful shutdown
-- Six-hour ephemeral rooms with private host/guest mutation tokens
+- Six-hour ephemeral rooms for up to 12 guests, with private mutation tokens
 - QR, manual room code, full-screen TV card, and printable join card
 - Measured capability checks, three-input practice, mixed-input comparison,
   offline state, large-text control, and reduced-motion treatment
@@ -42,13 +42,19 @@ to port 8080.
 ## Test and verify
 
 ```sh
+npm ci
 npm test
-npm run build
 npm run lint
+npm run build
+npm run test:browser
 ```
 
-`npm test` runs the TypeScript model suite and Rust room-lifecycle suite. The
-production output is exactly `dist/`, with `dist/index.html` at its root.
+`npm test` runs the TypeScript model suite and Rust API suite, including 24
+parallel joins across multiple SQLite connections. `npm run test:browser`
+checks the same capacity boundary through the release server, then covers the
+host/guest flow, forwarded-IP rate limiting, accessibility, privacy, offline
+reload, and the 390px layout. The production output is exactly `dist/`, with
+`dist/index.html` at its root.
 
 Runtime configuration is environment-only:
 

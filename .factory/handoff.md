@@ -1,26 +1,85 @@
-# Room Ready — verification handoff
+# Room Ready — repair handoff
 
-## Current release disposition: **FAIL**
+Work order: `couch-play-preflight-repair-4`
 
-Verification work order: `couch-play-preflight-verify-3`
-Candidate: `356d4941a7c304c1147f3feb9744b20b2ca7640b`
+Verifier report: commit `b56bc84fa71a7205d044bcef15e6d656cf173d52`
+
+Failed candidate: `356d4941a7c304c1147f3feb9744b20b2ca7640b`
+
+Repair code commits: `0e80d6b`, `3cb6b1b`
+
 Live URL: <https://couch-play-preflight.sociobot.in>
 
-The live service now matches the requested candidate and all ordinary
-host/guest, accessibility, privacy, PWA, performance, header, build, and
-sequential-boundary checks passed. Do **not** promote: admission is not atomic.
+## Release disposition
 
-### High defect
+**Repaired and ready for deployment.** The only finding in verification 3,
+including its controller-required exact reproduction, is fixed at the SQLite
+admission boundary. Behavior that passed verification 3 remains covered.
 
-Twenty-four simultaneous joins to one fresh room yielded 13 live guests and
-24 local-release guests, exceeding the stated 12-guest cap. The count and
-insert occur separately, permitting a race. Make admission transactional or
-schema-enforced and add a parallel-join regression; then rerun verification.
+## Finding, reproduction, and repair
 
-See [`.factory/verification-3.md`](verification-3.md) for commands, complete
-evidence, and the Docker-environment limitation.
+Before any code change, the unchanged candidate was built as a release binary
+and given a fresh SQLite database. Twenty-four simultaneous HTTP joins to one
+new room returned **24 HTTP 200 responses**, and its snapshot contained **24
+players**. This matches the verifier's local failure exactly.
 
-## How to rerun
+The join handler previously released its database connection between the room
+lookup, player count, and insert. Parallel requests could therefore observe
+the same count. Admission now starts `BEGIN IMMEDIATE` before checking the room
+and count, then commits the insert in that same transaction. SQLite reserves
+the writer before any request can make an admission decision, so both one- and
+multi-connection execution preserve the hard limit.
+
+Exact regression coverage exists at two boundaries:
+
+- Rust test `parallel_joins_never_exceed_the_room_guest_limit` starts 24 joins
+  through an eight-connection SQLite pool and asserts 12 successes, 12 HTTP
+  conflict results, and exactly 12 persisted players.
+- `npm run test:browser` repeats 24 simultaneous HTTP joins against the release
+  binary and asserts the same 12/12 split and 12-player snapshot.
+
+The response-policy regression now also proves API throttling returns 429 with
+`Retry-After` and keys clients by the first `X-Forwarded-For` address. The
+container build now follows current stable Rust through `rust:1-alpine`.
+
+## Local verification evidence
+
+All commands ran after a clean `npm ci` (88 packages, 89 audited, zero
+vulnerabilities):
+
+- `npm test`: 3 Vitest tests and 7 Rust tests passed.
+- `npm run lint`: TypeScript no-emit and locked Clippy for all targets with
+  `-D warnings` passed.
+- `npm run build`: production output was written to `dist/`. Initial JS is
+  48,465 B / 18,420 B gzip; CSS is 15,644 B / 4,550 B gzip; no fonts ship; the
+  mobile hero is 35,782 B.
+- `cargo build --locked --release --manifest-path server/Cargo.toml` passed.
+  The binary reported the exact source revision even when a hostile runtime
+  `BUILD_SHA` was supplied.
+- `npm run test:browser` passed the release-server capacity regression,
+  forwarded-IP rate policy, desktop host plus keyboard guest flow, three-key
+  rehearsal, ready state, axe scan, privacy request capture, service-worker
+  offline reload, response headers, and 390px mobile layout.
+- A separate API matrix passed 100/100 concurrent health calls; 12 accepted and
+  12 rejected concurrent joins; a 12-player snapshot; malformed code, blank
+  name, unsupported input, overlong label, 17 KB body, invalid host, empty
+  accepted-input, close, and read-after-close policies; `429 + Retry-After`;
+  first-hop forwarded-IP isolation; CSP, `nosniff`, `no-referrer`, framing
+  denial, no cookies, and immutable asset caching.
+- `/opt/fleet/lib/verify-url.sh` passed with 0 console errors, `lang=en`, a
+  descriptive title, exactly one h1, a main landmark, complete image alt text,
+  and labeled buttons.
+- Fresh Playwright contexts passed desktop, 390×844 mobile, keyboard-first skip
+  link with a visible solid outline, reduced motion (`1e-06s`), zero axe WCAG
+  A/AA violations on home/privacy/terms/mobile, no initial local/session
+  storage, no cookies, no third-party requests, no console/page errors, stale
+  service-worker cache cleanup, and offline reload. Mobile document width was
+  exactly 390px.
+- Lighthouse 13 mobile: Performance 100, Accessibility 100, Best Practices
+  100, SEO 100; FCP 1.2 s, LCP 1.2 s, TBT 40 ms, CLS 0.
+- Package/consumer testing is not applicable to this deployed web product.
+
+## Run and verify
 
 ```sh
 npm ci
@@ -30,8 +89,20 @@ npm run build
 npm run test:browser
 ```
 
-Run more than 12 `POST /api/rooms/:code/join` requests concurrently and assert
-the snapshot never contains more than 12 players.
+The container must run with exactly one replica while it uses local SQLite.
+After deployment, compare `git rev-parse HEAD` with the full `build_sha` from
+`GET /health`, rerun the live 24-way join probe, and run `verify-url.sh`.
+
+## Known limits and next steps
+
+- Room state survives requests on one always-on replica but not container
+  replacement. Move it to PostgreSQL before allowing more than one replica or
+  promising restart durability. Azure Files is not suitable for SQLite locks.
+- Browsers cannot prove an arbitrary television or casting chain, so the host
+  confirms the display.
+- Gamepad readiness depends on browser exposure after an input gesture.
+- The brief's under-five-minute target requires an observed four-to-eight-person
+  usability study; the product does not state that target as achieved.
 
 ---
 

@@ -31,6 +31,6 @@ COPY --from=server /app/server/target/release/room-ready-server /usr/local/bin/r
 COPY --from=web /app/dist ./dist
 RUN mkdir /data && chown roomready:roomready /data
 USER roomready
-ENV PORT=8080 DATABASE_URL=sqlite:///data/room-ready.db?mode=rwc DIST_DIR=/app/dist
+ENV PORT=8080
 EXPOSE 8080
 CMD ["room-ready-server"]

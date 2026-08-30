@@ -70,8 +70,8 @@ Runtime configuration is environment-only:
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `PORT` | `8080` | HTTP listen port |
-| `DATABASE_URL` | `sqlite://room-ready.db?mode=rwc` | SQLite connection |
-| `DIST_DIR` | `dist` | Built frontend directory |
+| `DATABASE_URL` | local `sqlite://room-ready.db?mode=rwc`; `/data/room-ready.db` in the container | SQLite connection |
+| `DIST_DIR` | local `dist`; `/app/dist` in the container | Built frontend directory |
 | `RUST_LOG` | library default | Structured log filter |
 
 ## Container deployment

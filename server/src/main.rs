@@ -14,7 +14,7 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
     FromRow, SqlitePool,
 };
-use std::{env, net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc, time::Duration as StdDuration};
+use std::{env, net::SocketAddr, path::{Path as FsPath, PathBuf}, str::FromStr, sync::Arc, time::Duration as StdDuration};
 use tower_http::{
     compression::CompressionLayer,
     services::{ServeDir, ServeFile},
@@ -143,7 +143,7 @@ async fn main() {
 
     let (database_url, database_config) = match env::var("DATABASE_URL") {
         Ok(value) => (value, "supplied"),
-        Err(_) => ("sqlite://room-ready.db?mode=rwc".into(), "defaulted"),
+        Err(_) => (default_database_url(), "defaulted"),
     };
     // One always-on replica owns this SQLite file. Keeping one pooled
     // connection makes every request observe the same committed room state;
@@ -157,7 +157,7 @@ async fn main() {
     let db = SqlitePoolOptions::new().max_connections(1).connect_with(database_options).await.expect("connect database");
     migrate(&db).await.expect("migrate database");
     let state = AppState { db, build_sha: build_sha().to_owned() };
-    let dist = env::var("DIST_DIR").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("dist"));
+    let dist = env::var("DIST_DIR").map(PathBuf::from).unwrap_or_else(|_| default_dist_dir());
     let app = app(state, dist);
     let port: u16 = env::var("PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(8080);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
@@ -239,6 +239,14 @@ async fn cache_hashed_assets(request: Request<Body>, next: Next) -> Response {
 
 fn build_sha() -> &'static str {
     env!("ROOM_READY_BUILD_SHA")
+}
+
+fn default_database_url() -> String {
+    if FsPath::new("/data").is_dir() { "sqlite:///data/room-ready.db?mode=rwc".into() } else { "sqlite://room-ready.db?mode=rwc".into() }
+}
+
+fn default_dist_dir() -> PathBuf {
+    if FsPath::new("/app/dist").is_dir() { PathBuf::from("/app/dist") } else { PathBuf::from("dist") }
 }
 
 async fn migrate(db: &SqlitePool) -> Result<(), sqlx::Error> {

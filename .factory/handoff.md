@@ -1,29 +1,46 @@
-# Room Ready — independent verification 8 handoff
+# Room Ready — strict review 1 handoff
 
-## Release disposition: **PASS**
+## Release disposition: **FAIL**
 
-Verified candidate: `d8760670701017691e03c3c7f481be485f8ab540`
-Verified URL: <https://couch-play-preflight.sociobot.in>
+Implementation reviewed: `d8760670701017691e03c3c7f481be485f8ab540`
 
-The live `/health` response reports that exact immutable commit and the
-production rebuild with the same `BUILD_SHA` emitted the exact JS asset served
-live: `index-9mmxaT0E.js`.
+Documentation baseline: `c28f2c187b8c683af14e25186e80bc2b6f9b1056`
 
-## What was verified
+Live URL: <https://couch-play-preflight.sociobot.in>
 
-- All 17 manifest claim commands were run independently from a clean checkout
-  and passed; the unfiltered `npm run test:browser` also passed.
-- `npm test`, `npm run lint`, and the production build passed. The first-load
-  JS is 20.60 kB gzip; CSS is 5.09 kB gzip.
-- Fresh live host → mobile guest → keyboard practice → host-read flow passed.
-  The invalid-room recovery, 12-guest boundary, rate limit, privacy traffic,
-  service worker/offline regression, keyboard skip link/focus, reduced motion,
-  desktop and 390px layout, headers, caching, and metadata were checked.
-- Live rate limit was observed at a 40-request burst allowance: 55 quick
-  requests returned 41× `200` and 14× `429`, with `Retry-After: 1` on 429.
-- Live axe WCAG 2 A/AA scans found no serious or critical issues.
+The product's core live flow, candidate identity, local gates, accessibility,
+privacy traffic, offline behavior, persistence, and backend boundaries passed.
+Release remains blocked by **2 findings** and **5 untested or incompletely
+tested public claims**.
 
-## How to verify
+## Findings to repair
+
+1. Add or correct claim tests for actual six-hour expiry, positive touch
+   practice, input-mix comparison outcomes, raw-network-address storage, and
+   real host/guest session-token lifetime.
+2. Replace metaphor and mood copy such as “Your seat check,” “Guest bench,”
+   “Bringing up the room lights…,” and “One room, three signals” with literal
+   task and state labels. Update `.factory/copy-audit.md` accordingly.
+
+Full evidence and required wording are in [`.factory/review-1.md`](review-1.md).
+
+## What passed
+
+- All 17 exact manifest commands passed independently from a clean detached
+  checkout, and the unfiltered browser suite passed.
+- `npm test`, `npm run lint`, and the candidate production build passed.
+- Live `/health` reports the exact candidate SHA, and the rebuilt entry asset
+  hash matches live.
+- Fresh desktop host → phone guest → practice → host-ready, live touch
+  practice, 40/40 cross-connection reads, 12-guest capacity, invalid recovery,
+  token isolation, and 41×200 / 14×429 rate limiting passed.
+- Demo isolation/reset/exit, privacy traffic, legal and 404 routes, keyboard
+  focus/back behavior, reduced motion, 390 px and large-text layout, offline
+  reload, headers, metadata, links, and zero-violation axe scans passed.
+- Fresh Lighthouse mobile scores were 100 in all four measured categories;
+  LCP was 1.1 s, TBT 0 ms, and CLS 0.
+
+## Reproduce
 
 ```sh
 npm ci
@@ -33,11 +50,11 @@ BUILD_SHA=d8760670701017691e03c3c7f481be485f8ab540 npm run build
 npm run test:browser
 ```
 
-Then visit `/`, `/demo`, `/privacy`, and `/terms`. Full evidence is in
-`.factory/verification-8.md`.
+Then run each exact command in `.factory/claims.json` independently and review
+the five coverage gaps listed in `.factory/review-1.md`.
 
-## Known gap
+## Limitation
 
-The verifier container has no `docker` executable, so Docker image construction
-was not run locally. The container's exact source identity was nevertheless
-confirmed through the live backend and production asset hash.
+Docker and Podman are unavailable in this verifier container, so image
+construction was not rerun. No product code, deployment, infrastructure, DNS,
+or billing state was changed.

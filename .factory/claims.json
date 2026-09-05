@@ -24,8 +24,8 @@
     "id": "temporary-rooms",
     "claim": "Rooms expire after six hours",
     "where": "Landing facts, host board, Privacy page, README",
-    "test": "npm run test:browser -- --grep @claim:temporary-rooms",
-    "sandbox": "Fresh room response expires six hours after creation within a one-minute clock margin."
+    "test": "cargo test --manifest-path server/Cargo.toml tests::claim_temporary_rooms_reject_expired_reads_joins_and_updates -- --exact",
+    "sandbox": "Fresh SQLite room is advanced past expiry; its read, join, guest update, and host update all return the expired-room outcome."
   },
   {
     "id": "no-account-or-install",
@@ -81,7 +81,7 @@
     "claim": "Touch practice accepts touch input, not mouse clicks",
     "where": "Guest touch practice",
     "test": "npm run test:browser -- --grep @claim:touch-authenticity",
-    "sandbox": "Desktop Chromium reports no touch capability; three normal mouse clicks leave practice at 0 of 3."
+    "sandbox": "Fresh non-touch and touch contexts prove three mouse clicks stay at 0 of 3, while three touchscreen taps pass and persist the touch result."
   },
   {
     "id": "large-text",
@@ -109,7 +109,21 @@
     "claim": "Room Ready compares the host-selected input mix and does not certify a specific game",
     "where": "Landing, host board, footer, Terms page, README",
     "test": "npm run test:browser -- --grep @claim:game-fit-not-certification",
-    "sandbox": "Fresh landing page asserts the explicit no-certification copy beside the input-comparison explanation."
+    "sandbox": "Fresh host and keyboard guest show Fits setup; removing Keyboard from the host selection changes that guest to Not selected, and restoring it returns Fits setup."
+  },
+  {
+    "id": "no-raw-network-address",
+    "claim": "The room record does not store the raw network address",
+    "where": "Privacy page",
+    "test": "cargo test --manifest-path server/Cargo.toml tests::claim_no_raw_network_address_in_room_record -- --exact",
+    "sandbox": "Fresh SQLite room uses a unique network address; its complete stored room record contains only the one-way 64-character match value, never the raw address."
+  },
+  {
+    "id": "session-token-lifetime",
+    "claim": "Host and guest tokens live in session storage and disappear when the browser session ends",
+    "where": "Privacy page",
+    "test": "npm run test:browser -- --grep @claim:session-token-lifetime",
+    "sandbox": "Fresh host and guest browser sessions store their own tokens; closing both and opening a new session leaves no host or guest token and blocks host access."
   },
   {
     "id": "immediate-host-read",

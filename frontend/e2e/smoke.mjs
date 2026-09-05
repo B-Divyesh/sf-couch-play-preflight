@@ -50,6 +50,16 @@ async function createRoom(gameLabel = 'Browser test', discoverable = true, addre
   return response.json();
 }
 
+async function createLocalRoom(gameLabel = 'Browser test', discoverable = true) {
+  const response = await fetch(`${baseUrl}/api/rooms`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ game_label: gameLabel, discoverable }),
+  });
+  assert(response.status === 200, `Create local room returned ${response.status}`);
+  return response.json();
+}
+
 async function closeRoom(room) {
   await fetch(`${baseUrl}/api/rooms/${room.code}`, {
     method: 'DELETE',
@@ -103,14 +113,6 @@ const claims = {
     assert(requests.every((url) => url.startsWith(baseUrl)), `Demo made a third-party request: ${requests.join(', ')}`);
     assert(requests.every((url) => !new URL(url).pathname.startsWith('/api/')), 'Demo contacted the room API');
     await context.close();
-  },
-
-  async 'temporary-rooms'() {
-    const before = Date.now();
-    const room = await createRoom('Expiry check');
-    const lifetime = Date.parse(room.expires_at) - before;
-    assert(lifetime >= (5 * 60 + 59) * 60 * 1000 && lifetime <= (6 * 60 + 1) * 60 * 1000, `Room lifetime was not six hours: ${lifetime}ms`);
-    await closeRoom(room);
   },
 
   async 'no-account-or-install'({ browser }) {
@@ -215,20 +217,38 @@ const claims = {
   },
 
   async 'touch-authenticity'({ browser }) {
-    const room = await createRoom('Touch authenticity');
-    const context = await browser.newContext({ hasTouch: false });
-    const page = await context.newPage();
-    await page.goto(`${baseUrl}/join?room=${room.code}`);
-    await page.getByLabel('Name shown to the host').fill('Mouse guest');
-    await page.getByRole('button', { name: 'Join and run checks' }).click();
-    await page.getByText('The browser cannot see this input yet.').waitFor();
-    await page.locator('#practice-pad').click();
-    await page.locator('#practice-pad').click();
-    await page.locator('#practice-pad').click();
-    assert((await page.locator('#practice-count').textContent()) === '0 of 3', 'Mouse clicks were counted as touch practice');
-    assert(await page.getByText('Practice passed.').count() === 0, 'Mouse clicks incorrectly passed touch practice');
-    await context.close();
-    await closeRoom(room);
+    const mouseRoom = await createLocalRoom('Mouse touch rejection');
+    const mouseContext = await browser.newContext({ hasTouch: false });
+    const mousePage = await mouseContext.newPage();
+    await mousePage.goto(`${baseUrl}/join?room=${mouseRoom.code}`);
+    await mousePage.getByLabel('Name shown to the host').fill('Mouse guest');
+    await mousePage.getByRole('button', { name: 'Join and run checks' }).click();
+    await mousePage.getByText('The browser cannot see this input yet.').waitFor();
+    await mousePage.locator('#practice-pad').click();
+    await mousePage.locator('#practice-pad').click();
+    await mousePage.locator('#practice-pad').click();
+    assert((await mousePage.locator('#practice-count').textContent()) === '0 of 3', 'Mouse clicks were counted as touch practice');
+    assert(await mousePage.getByText('Practice passed.').count() === 0, 'Mouse clicks incorrectly passed touch practice');
+    await mouseContext.close();
+    await closeRoom(mouseRoom);
+
+    const touchRoom = await createLocalRoom('Touch acceptance');
+    const touchContext = await browser.newContext({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } });
+    const touchPage = await touchContext.newPage();
+    await touchPage.goto(`${baseUrl}/join?room=${touchRoom.code}`);
+    await touchPage.getByLabel('Name shown to the host').fill('Touch guest');
+    await touchPage.getByRole('button', { name: 'Join and run checks' }).click();
+    const pad = touchPage.locator('#practice-pad');
+    await touchPage.waitForFunction(() => navigator.maxTouchPoints > 0);
+    for (let expected = 1; expected <= 3; expected += 1) {
+      await pad.tap({ position: { x: 24 + expected, y: 24 + expected } });
+      await touchPage.waitForFunction((count) => document.querySelector('#practice-count')?.textContent === `${count} of 3`, expected);
+    }
+    await touchPage.getByText('Practice passed.').waitFor();
+    const snapshot = await fetch(`${baseUrl}/api/rooms/${touchRoom.code}`).then((response) => response.json());
+    assert(snapshot.players[0]?.practice_ok === true && snapshot.players[0]?.input_ok === true, 'Three touch inputs did not persist a successful touch practice result');
+    await touchContext.close();
+    await closeRoom(touchRoom);
   },
 
   async 'large-text'({ browser }) {
@@ -265,12 +285,79 @@ const claims = {
   },
 
   async 'game-fit-not-certification'({ browser }) {
-    const context = await browser.newContext();
-    const page = await context.newPage();
-    await page.goto(baseUrl);
-    await page.getByText('without pretending we tested your game').waitFor();
-    await page.getByText('It does not certify a specific game.').waitFor();
-    await context.close();
+    const room = await createLocalRoom('Input mix comparison');
+    const host = await hostPage(browser, room);
+    const guestContext = await browser.newContext();
+    const guest = await guestContext.newPage();
+    await guest.goto(`${baseUrl}/join?room=${room.code}`);
+    await guest.getByLabel('Name shown to the host').fill('Keyboard guest');
+    await guest.getByRole('radio', { name: /Keyboard/ }).check();
+    await guest.getByRole('button', { name: 'Join and run checks' }).click();
+    const pad = guest.locator('#practice-pad');
+    await pad.focus();
+    await pad.press('a'); await pad.press('ArrowRight'); await pad.press('b');
+    await guest.getByText('Practice passed.').waitFor();
+    const snapshot = await fetch(`${baseUrl}/api/rooms/${room.code}`).then((response) => response.json());
+    assert(snapshot.players[0]?.practice_ok === true && snapshot.players[0]?.input_kind === 'keyboard', 'Keyboard guest result did not persist before the host comparison');
+    await host.page.reload({ waitUntil: 'domcontentloaded' });
+    await host.page.locator('.room-code').waitFor();
+    const initialStatuses = await host.page.locator('.status-row').allTextContents();
+    assert(initialStatuses.some((status) => status.includes('Fits setup')), `Host did not show its persisted input comparison: ${JSON.stringify(initialStatuses)}`);
+
+    const keyboardInput = host.page.locator('input[name="inputs"][value="keyboard"]');
+    await keyboardInput.uncheck();
+    await host.page.getByRole('button', { name: 'Save session fit' }).click();
+    await host.page.getByText('Session fit saved. Guest readiness has been recalculated.').waitFor();
+    const withoutKeyboard = await fetch(`${baseUrl}/api/rooms/${room.code}`).then((response) => response.json());
+    assert(!withoutKeyboard.room.accepted_inputs.split(',').includes('keyboard'), 'Host input selection still accepted keyboard after it was removed');
+    await host.page.reload({ waitUntil: 'domcontentloaded' });
+    await host.page.locator('.room-code').waitFor();
+    const removedStatuses = await host.page.locator('.status-row').allTextContents();
+    assert(removedStatuses.some((status) => status.includes('Not selected')), `Host did not show the removed keyboard input: ${JSON.stringify(removedStatuses)}`);
+    await keyboardInput.check();
+    await host.page.getByRole('button', { name: 'Save session fit' }).click();
+    await host.page.getByText('Session fit saved. Guest readiness has been recalculated.').waitFor();
+    const restoredKeyboard = await fetch(`${baseUrl}/api/rooms/${room.code}`).then((response) => response.json());
+    assert(restoredKeyboard.room.accepted_inputs.split(',').includes('keyboard'), 'Host input selection did not restore keyboard');
+    await host.page.reload({ waitUntil: 'domcontentloaded' });
+    await host.page.locator('.room-code').waitFor();
+    const restoredStatuses = await host.page.locator('.status-row').allTextContents();
+    assert(restoredStatuses.some((status) => status.includes('Fits setup')), `Host did not restore the keyboard input comparison: ${JSON.stringify(restoredStatuses)}`);
+    await guestContext.close();
+    await host.context.close();
+    await closeRoom(room);
+  },
+
+  async 'session-token-lifetime'({ browser }) {
+    const hostContext = await browser.newContext();
+    const host = await hostContext.newPage();
+    await host.goto(baseUrl);
+    await host.getByRole('button', { name: /Open a real room/ }).click();
+    await host.locator('.room-code').waitFor();
+    const code = (await host.locator('.room-code').textContent()).trim();
+    const hostToken = await host.evaluate((roomCode) => sessionStorage.getItem(`host:${roomCode}`), code);
+    assert(hostToken, 'Host token was not kept in session storage');
+
+    const guestContext = await browser.newContext();
+    const guest = await guestContext.newPage();
+    await guest.goto(`${baseUrl}/join?room=${code}`);
+    await guest.getByLabel('Name shown to the host').fill('Session guest');
+    await guest.getByRole('radio', { name: /Keyboard/ }).check();
+    await guest.getByRole('button', { name: 'Join and run checks' }).click();
+    await guest.locator('#practice-pad').waitFor();
+    const guestToken = await guest.evaluate((roomCode) => sessionStorage.getItem(`guest:${roomCode}`), code);
+    assert(guestToken, 'Guest token was not kept in session storage');
+    await guestContext.close();
+    await hostContext.close();
+
+    const newBrowserSession = await browser.newContext();
+    const newHost = await newBrowserSession.newPage();
+    await newHost.goto(`${baseUrl}/host?room=${code}`);
+    await newHost.getByRole('heading', { name: 'Host access is not available in this browser.' }).waitFor();
+    const keys = await newHost.evaluate(() => Object.keys(sessionStorage));
+    assert(!keys.some((key) => key.startsWith('host:') || key.startsWith('guest:')), `Room token survived a closed browser session: ${keys.join(', ')}`);
+    await newBrowserSession.close();
+    await closeRoom({ code, host_token: hostToken });
   },
 
   async 'immediate-host-read'({ browser }) {

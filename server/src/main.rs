@@ -609,11 +609,17 @@ async fn update_player(
     Json(input): Json<UpdatePlayer>,
 ) -> Result<StatusCode, ApiError> {
     let code = valid_code(code)?;
+    if !room_is_active(&state.db, &code).await? {
+        return Err(ApiError(StatusCode::NOT_FOUND, "Room not found or expired"));
+    }
     let note = clean_text(input.note.unwrap_or_default(), 100)?;
     let result = sqlx::query("UPDATE players SET browser_ok=?, input_ok=?, network_ok=?, practice_ok=?, screen_awake=?, note=?, updated_at=? WHERE id=? AND room_code=? AND player_token=?")
-        .bind(input.browser_ok).bind(input.input_ok).bind(input.network_ok).bind(input.practice_ok).bind(input.screen_awake).bind(note).bind(Utc::now().to_rfc3339()).bind(id).bind(code).bind(input.player_token)
+        .bind(input.browser_ok).bind(input.input_ok).bind(input.network_ok).bind(input.practice_ok).bind(input.screen_awake).bind(note).bind(Utc::now().to_rfc3339()).bind(id).bind(&code).bind(input.player_token)
         .execute(&state.db).await.map_err(db_error)?;
     if result.rows_affected() == 0 {
+        if !room_is_active(&state.db, &code).await? {
+            return Err(ApiError(StatusCode::NOT_FOUND, "Room not found or expired"));
+        }
         return Err(ApiError(
             StatusCode::FORBIDDEN,
             "Guest update was not authorized",
@@ -628,6 +634,9 @@ async fn update_room(
     Json(input): Json<UpdateRoom>,
 ) -> Result<StatusCode, ApiError> {
     let code = valid_code(code)?;
+    if !room_is_active(&state.db, &code).await? {
+        return Err(ApiError(StatusCode::NOT_FOUND, "Room not found or expired"));
+    }
     let game = clean_text(input.game_label, 60)?;
     let allowed = ["touch", "keyboard", "gamepad"];
     if input.accepted_inputs.is_empty()
@@ -643,8 +652,11 @@ async fn update_room(
     }
     let inputs = input.accepted_inputs.join(",");
     let result = sqlx::query("UPDATE rooms SET game_label=?, accepted_inputs=?, display_ready=? WHERE code=? AND host_token=?")
-        .bind(game).bind(inputs).bind(input.display_ready).bind(code).bind(input.host_token).execute(&state.db).await.map_err(db_error)?;
+        .bind(game).bind(inputs).bind(input.display_ready).bind(&code).bind(input.host_token).execute(&state.db).await.map_err(db_error)?;
     if result.rows_affected() == 0 {
+        if !room_is_active(&state.db, &code).await? {
+            return Err(ApiError(StatusCode::NOT_FOUND, "Room not found or expired"));
+        }
         return Err(ApiError(
             StatusCode::FORBIDDEN,
             "Host update was not authorized",
@@ -704,6 +716,16 @@ fn db_error(error: sqlx::Error) -> ApiError {
         StatusCode::INTERNAL_SERVER_ERROR,
         "The room service had a problem; try again",
     )
+}
+
+async fn room_is_active(db: &SqlitePool, code: &str) -> Result<bool, ApiError> {
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM rooms WHERE code = ? AND expires_at > ?)")
+        .bind(code)
+        .bind(Utc::now().to_rfc3339())
+        .fetch_one(db)
+        .await
+        .map(|exists: i64| exists != 0)
+        .map_err(db_error)
 }
 
 async fn cleanup(db: &SqlitePool) {
@@ -847,6 +869,134 @@ mod tests {
         .await
         .unwrap();
         assert!(get_room(State(state), Path(created.code)).await.is_err());
+    }
+
+    // @claim:temporary-rooms
+    #[tokio::test]
+    async fn claim_temporary_rooms_reject_expired_reads_joins_and_updates() {
+        let db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        migrate(&db).await.unwrap();
+        let state = test_state(db);
+        let created = create_room(
+            State(state.clone()),
+            headers_for("203.0.113.41"),
+            Json(CreateRoom {
+                game_label: Some("Expiry claim".into()),
+                discoverable: Some(true),
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        let joined = join_room(
+            State(state.clone()),
+            Path(created.code.clone()),
+            Json(JoinRoom {
+                name: "Sam".into(),
+                input_kind: "keyboard".into(),
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        sqlx::query("UPDATE rooms SET expires_at = ? WHERE code = ?")
+            .bind((Utc::now() - Duration::seconds(1)).to_rfc3339())
+            .bind(&created.code)
+            .execute(&state.db)
+            .await
+            .unwrap();
+
+        let read = get_room(State(state.clone()), Path(created.code.clone()))
+            .await
+            .unwrap_err();
+        assert_eq!(read.0, StatusCode::NOT_FOUND);
+        let join = join_room(
+            State(state.clone()),
+            Path(created.code.clone()),
+            Json(JoinRoom {
+                name: "Alex".into(),
+                input_kind: "touch".into(),
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(join.0, StatusCode::NOT_FOUND);
+        let guest_update = update_player(
+            State(state.clone()),
+            Path((created.code.clone(), joined.player_id)),
+            Json(UpdatePlayer {
+                player_token: joined.player_token,
+                browser_ok: true,
+                input_ok: true,
+                network_ok: true,
+                practice_ok: true,
+                screen_awake: false,
+                note: None,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(guest_update.0, StatusCode::NOT_FOUND);
+        let host_update = update_room(
+            State(state),
+            Path(created.code),
+            Json(UpdateRoom {
+                host_token: created.host_token,
+                game_label: "Expiry claim".into(),
+                accepted_inputs: vec!["keyboard".into()],
+                display_ready: true,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(host_update.0, StatusCode::NOT_FOUND);
+    }
+
+    // @claim:no-raw-network-address
+    #[tokio::test]
+    async fn claim_no_raw_network_address_in_room_record() {
+        let db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        migrate(&db).await.unwrap();
+        let state = test_state(db);
+        let raw_address = "203.0.113.77";
+        let headers = headers_for(raw_address);
+        let created = create_room(
+            State(state.clone()),
+            headers.clone(),
+            Json(CreateRoom {
+                game_label: Some("Network privacy claim".into()),
+                discoverable: Some(true),
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        let record: String = sqlx::query_scalar(
+            "SELECT code || char(31) || host_token || char(31) || created_at || char(31) || expires_at || char(31) || game_label || char(31) || accepted_inputs || char(31) || CAST(display_ready AS TEXT) || char(31) || network_id || char(31) || CAST(discoverable AS TEXT) FROM rooms WHERE code = ?",
+        )
+        .bind(&created.code)
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        let stored_network_id: String =
+            sqlx::query_scalar("SELECT network_id FROM rooms WHERE code = ?")
+                .bind(&created.code)
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+
+        assert!(!record.contains(raw_address));
+        assert_eq!(stored_network_id, network_id(&headers, &state.network_key));
+        assert_ne!(stored_network_id, raw_address);
+        assert_eq!(stored_network_id.len(), 64);
     }
 
     #[tokio::test]
